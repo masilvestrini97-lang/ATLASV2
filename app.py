@@ -108,7 +108,7 @@ FEATURE_LABELS = {
     "pct_high_impact_score": "% Variants à haut impact (score≥6)",
     "median_CADD": "Score CADD médian",
     "median_AR": "Ratio allélique médian",
-    "mean_gnomAD_AF": "Fréquence gnomAD moyenne",
+    "mean_gnomAD_AF": "Fréquence gnomAD NFE moyenne",
     "n_unique_genes": "Gènes uniques touchés",
     "Histo_HV": "Histologie HV",
     "Histo_mixed": "Histologie mixed",
@@ -128,7 +128,7 @@ FEATURE_LABELS = {
 def classify_acmg(row):
     clinvar = str(row.get("Clinvar_significance", "")).lower().strip()
     cadd = row.get("CADD_phred", 0)
-    gnomad = row.get("gnomad_exomes_AF", None)
+    gnomad = row.get("gnomad_exomes_NFE_AF", None)
     impact = str(row.get("Putative_impact", "")).lower().strip()
 
     if clinvar in ("pathogenic", "pathogeniclikelypathogenic"):
@@ -186,7 +186,7 @@ def compute_variant_impact_score(row):
         score += min(cadd / 20.0, 2.0)
     
     # 3. Rareté allélique (0-2)
-    gnomad = row.get("gnomad_exomes_AF", None)
+    gnomad = row.get("gnomad_exomes_NFE_AF", None)
     if pd.isna(gnomad) or gnomad == 0:
         score += 2.0
     elif gnomad < 0.0001:
@@ -277,7 +277,7 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
             # ── Métriques continues ──
             row["median_CADD"] = dp["CADD_phred"].median() if dp["CADD_phred"].notna().any() else 0
             row["median_AR"] = dp["Allelic_ratio"].median()
-            row["mean_gnomAD_AF"] = dp["gnomad_exomes_AF"].mean() if dp["gnomad_exomes_AF"].notna().any() else 0
+            row["mean_gnomAD_AF"] = dp["gnomad_exomes_NFE_AF"].mean() if dp["gnomad_exomes_NFE_AF"].notna().any() else 0
             row["n_unique_genes"] = dp["Gene_symbol"].nunique()
 
         features[pseudo] = row
@@ -510,7 +510,7 @@ sel_patients = st.sidebar.multiselect("Patients", sorted(df["Pseudo"].unique()),
 sel_genes = st.sidebar.multiselect("Gènes", sorted(df["Gene_symbol"].unique()), placeholder="Tous")
 sel_impacts = st.sidebar.multiselect("Impact", IMPACT_ORDER, placeholder="Tous")
 sel_acmg = st.sidebar.multiselect("ACMG", ACMG_ORDER, placeholder="Toutes")
-af_max = st.sidebar.slider("gnomAD AF max", 0.0, 1.0, 1.0, 0.001, format="%.3f")
+af_max = st.sidebar.slider("gnomAD NFE AF max", 0.0, 1.0, 1.0, 0.001, format="%.3f")
 cadd_min = st.sidebar.slider("CADD min", 0.0, 50.0, 0.0, 0.5)
 ar_range = st.sidebar.slider("Allelic ratio", 0.0, 1.0, (0.0, 1.0), 0.01)
 depth_min = st.sidebar.number_input("Profondeur min", min_value=0, value=0, step=10)
@@ -521,7 +521,7 @@ if sel_genes: df_f = df_f[df_f["Gene_symbol"].isin(sel_genes)]
 if sel_impacts: df_f = df_f[df_f["Putative_impact"].isin(sel_impacts)]
 if sel_acmg: df_f = df_f[df_f["ACMG_class"].isin(sel_acmg)]
 df_f = df_f[
-    (df_f["gnomad_exomes_AF"].fillna(0) <= af_max) &
+    (df_f["gnomad_exomes_NFE_AF"].fillna(0) <= af_max) &
     (df_f["CADD_phred"].fillna(0) >= cadd_min) &
     (df_f["Allelic_ratio"].between(ar_range[0], ar_range[1])) &
     (df_f["Depth"] >= depth_min)
@@ -583,10 +583,10 @@ with tab_ov:
             height=550, xaxis_tickangle=-45, margin=dict(b=80))
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### CADD vs gnomAD AF")
-    sdf = df_f.dropna(subset=["CADD_phred", "gnomad_exomes_AF"])
+    st.markdown("### CADD vs gnomAD NFE AF")
+    sdf = df_f.dropna(subset=["CADD_phred", "gnomad_exomes_NFE_AF"])
     if len(sdf) > 0:
-        fig = px.scatter(sdf, x="gnomad_exomes_AF", y="CADD_phred", color="ACMG_class",
+        fig = px.scatter(sdf, x="gnomad_exomes_NFE_AF", y="CADD_phred", color="ACMG_class",
             color_discrete_map=ACMG_COLORS, category_orders={"ACMG_class": ACMG_ORDER},
             hover_data=["Gene_symbol", "hgvs.c", "hgvs.p", "Pseudo"], opacity=0.6, log_x=True)
         fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
@@ -604,12 +604,12 @@ with tab_var:
     st.markdown(f"**{len(dv):,} variants**")
     sc = ["Pseudo", "Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect",
           "Putative_impact", "ACMG_class", "Clinvar_significance", "CADD_phred",
-          "gnomad_exomes_AF", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
+          "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
     sc = [c for c in sc if c in dv.columns]
     st.dataframe(dv[sc].reset_index(drop=True), use_container_width=True, height=600,
         column_config={
             "CADD_phred": st.column_config.NumberColumn("CADD", format="%.1f"),
-            "gnomad_exomes_AF": st.column_config.NumberColumn("gnomAD AF", format="%.5f"),
+            "gnomad_exomes_NFE_AF": st.column_config.NumberColumn("gnomAD NFE", format="%.5f"),
             "Allelic_ratio": st.column_config.ProgressColumn("AR", min_value=0, max_value=1, format="%.2f"),
             "impact_score": st.column_config.NumberColumn("Impact Score", format="%.1f"),
         })
@@ -656,14 +656,14 @@ with tab_pat:
     dp_p = dp[dp["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]
     if len(dp_p) > 0:
         pc = ["Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "ACMG_class",
-              "Clinvar_significance", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth", "impact_score"]
+              "Clinvar_significance", "CADD_phred", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
         st.dataframe(dp_p[[c for c in pc if c in dp_p.columns]].reset_index(drop=True), use_container_width=True)
     else:
         st.success("Aucun variant pathogène / LP.")
 
     st.markdown("### Tous les variants")
     ac = ["Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "Putative_impact",
-          "ACMG_class", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth", "impact_score"]
+          "ACMG_class", "CADD_phred", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
     st.dataframe(dp[[c for c in ac if c in dp.columns]].reset_index(drop=True),
                  use_container_width=True, height=400)
 
@@ -699,7 +699,7 @@ with tab_gene:
         st.plotly_chart(fig, use_container_width=True)
 
     gc = ["Pseudo", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "Putative_impact",
-          "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth", "impact_score"]
+          "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
     st.dataframe(dg[[c for c in gc if c in dg.columns]].reset_index(drop=True),
                  use_container_width=True, height=400)
 
@@ -721,7 +721,7 @@ with tab_acmg:
     if len(dp_all) > 0:
         st.markdown(f"**{len(dp_all)} variants**")
         pc = ["Pseudo", "Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect",
-              "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth"]
+              "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth"]
         st.dataframe(dp_all[[c for c in pc if c in dp_all.columns]].reset_index(drop=True),
                      use_container_width=True, height=500)
 
@@ -774,8 +774,8 @@ with tab_clust:
         cl_ar_min = st.number_input("Ratio allélique min", min_value=0.0, value=0.05, step=0.01,
             format="%.2f", key="cl_ar", help="Exclut le bruit de fond (AR très bas)")
     with qc3:
-        cl_af_max = st.number_input("gnomAD AF max", min_value=0.0, value=0.01, step=0.005,
-            format="%.3f", key="cl_af", help="Exclut les polymorphismes fréquents (non informatifs)")
+        cl_af_max = st.number_input("gnomAD NFE AF max", min_value=0.0, value=0.01, step=0.005,
+            format="%.3f", key="cl_af", help="Exclut les polymorphismes fréquents en population européenne")
     with qc4:
         cl_exclude_benign = st.checkbox("Exclure Benign / Likely Benign", value=True,
             help="Focus sur les variants potentiellement pathogènes")
@@ -794,7 +794,7 @@ with tab_clust:
     df_clust = df_f[
         (df_f["Depth"] >= cl_depth_min) &
         (df_f["Allelic_ratio"] >= cl_ar_min) &
-        (df_f["gnomad_exomes_AF"].fillna(0) <= cl_af_max) &
+        (df_f["gnomad_exomes_NFE_AF"].fillna(0) <= cl_af_max) &
         (~df_f["Variant_effect"].isin(excluded_effects))
     ].copy()
 
