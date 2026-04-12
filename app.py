@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                  VARIANT EXPLORER v2.0                       ║
+║                  VARIANT EXPLORER v3.0                       ║
 ║          Outil interactif d'exploration de variants          ║
 ║              génomiques pour données de séquençage           ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -17,6 +17,13 @@ from sklearn.cluster import KMeans, AgglomerativeClustering
 from sklearn.metrics import silhouette_score
 from scipy.cluster.hierarchy import linkage
 import umap
+import json
+
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
 
 # ─────────────────────────────────────────────
 # CONFIGURATION
@@ -47,6 +54,20 @@ st.markdown("""
         font-size: 2.4rem; font-weight: 700; margin-bottom: 0;
     }
     .sub-title { color: #8892b0; font-size: 1.05rem; margin-top: 0; }
+    .cluster-card {
+        background: linear-gradient(135deg, #1a1a2e, #16213e);
+        border: 1px solid #0f3460; border-radius: 12px;
+        padding: 20px; margin: 10px 0;
+    }
+    .cluster-card h4 { color: #64ffda; margin-top: 0; }
+    .feat-up { color: #ff6b6b; font-weight: 600; }
+    .feat-down { color: #4ecdc4; font-weight: 600; }
+    .ai-interpretation {
+        background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+        border: 1px solid #64ffda33; border-radius: 12px;
+        padding: 24px; margin: 16px 0; line-height: 1.7;
+    }
+    .ai-interpretation h4 { color: #64ffda; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -61,6 +82,39 @@ ACMG_COLORS = {
 }
 ACMG_ORDER = ["Pathogenic", "Likely Pathogenic", "VUS", "Likely Benign", "Benign"]
 CLINICAL_COLS = ["Histo UCD", "Complication", "Chirurgie", "Auto Ac", "Recidive", "BO", "PNP", "MG", "FDSCS"]
+
+# Noms lisibles des features pour l'interprétation
+FEATURE_LABELS = {
+    "n_Pathogenic": "Variants Pathogènes",
+    "n_Likely Pathogenic": "Variants Likely Pathogenic",
+    "n_VUS": "Variants de Signification Incertaine (VUS)",
+    "n_Likely Benign": "Variants Likely Benign",
+    "n_Benign": "Variants Benign",
+    "n_impact_high": "Variants à impact HIGH",
+    "n_impact_moderate": "Variants à impact MODERATE",
+    "n_impact_low": "Variants à impact LOW",
+    "n_impact_modifier": "Variants MODIFIER",
+    "n_missensevariant": "Variants Missense",
+    "n_frameshiftvariant": "Variants Frameshift",
+    "n_stopgained": "Variants Stop Gained",
+    "n_spliceregionvariant": "Variants Splice Region",
+    "n_spliceacceptorvariant": "Variants Splice Acceptor",
+    "n_splicedonorvariant": "Variants Splice Donor",
+    "median_CADD": "Score CADD médian",
+    "median_AR": "Ratio allélique médian",
+    "median_depth": "Profondeur médiane",
+    "n_total_variants": "Nombre total de variants",
+    "n_unique_genes": "Nombre de gènes uniques",
+    "Histo_HV": "Histologie HV",
+    "Histo_mixed": "Histologie mixed",
+    "Complication": "Complications",
+    "Chirurgie": "Chirurgie",
+    "Recidive": "Récidive",
+    "BO": "Bronchiolite oblitérante (BO)",
+    "PNP": "Polyneuropathie (PNP)",
+    "MG": "Myasthénie (MG)",
+    "FDSCS": "FDSCS",
+}
 
 
 # ─────────────────────────────────────────────
@@ -113,33 +167,27 @@ def load_data(uploaded_file):
 
 
 def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=30):
-    """Matrice de features patient × features pour clustering."""
     patients = df["Pseudo"].unique()
     features = {}
 
     for pseudo in patients:
         dp = df[df["Pseudo"] == pseudo]
         row = {}
-
         if use_genomic:
             acmg_vc = dp["ACMG_class"].value_counts()
             for cls in ACMG_ORDER:
                 row[f"n_{cls}"] = acmg_vc.get(cls, 0)
-
             impact_vc = dp["Putative_impact"].value_counts()
             for imp in IMPACT_ORDER:
                 row[f"n_impact_{imp}"] = impact_vc.get(imp, 0)
-
             for eff in ["missensevariant", "frameshiftvariant", "stopgained",
                         "spliceregionvariant", "spliceacceptorvariant", "splicedonorvariant"]:
                 row[f"n_{eff}"] = len(dp[dp["Variant_effect"] == eff])
-
             row["median_CADD"] = dp["CADD_phred"].median() if dp["CADD_phred"].notna().any() else 0
             row["median_AR"] = dp["Allelic_ratio"].median()
             row["median_depth"] = dp["Depth"].median()
             row["n_total_variants"] = len(dp)
             row["n_unique_genes"] = dp["Gene_symbol"].nunique()
-
         features[pseudo] = row
 
     df_feat = pd.DataFrame.from_dict(features, orient="index")
@@ -162,10 +210,8 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
                         df_feat.loc[pseudo, "Histo_HV"] = 1 if val == "HV" else 0
                         df_feat.loc[pseudo, "Histo_mixed"] = 1 if val == "mixed" else 0
                     else:
-                        try:
-                            df_feat.loc[pseudo, col] = float(val)
-                        except (ValueError, TypeError):
-                            df_feat.loc[pseudo, col] = 0
+                        try: df_feat.loc[pseudo, col] = float(val)
+                        except (ValueError, TypeError): df_feat.loc[pseudo, col] = 0
                 else:
                     if col == "Histo UCD":
                         df_feat.loc[pseudo, "Histo_HV"] = 0
@@ -176,6 +222,150 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
     return df_feat.fillna(0).astype(float)
 
 
+def compute_cluster_interpretation(df_feat, labels, key_features, top_n=5):
+    """
+    Interprétation statistique : pour chaque cluster, identifie les features
+    les plus discriminantes par rapport à la moyenne globale (z-score).
+    """
+    df_fc = df_feat.copy()
+    df_fc["Cluster"] = labels
+
+    global_mean = df_feat[key_features].mean()
+    global_std = df_feat[key_features].std().replace(0, 1)  # évite division par 0
+
+    interpretations = {}
+    for cluster_id in sorted(df_fc["Cluster"].unique()):
+        cluster_data = df_fc[df_fc["Cluster"] == cluster_id]
+        cluster_mean = cluster_data[key_features].mean()
+
+        # Z-scores par rapport à la moyenne globale
+        z_scores = (cluster_mean - global_mean) / global_std
+
+        # Top features enrichies (z > 0) et appauvries (z < 0)
+        z_sorted = z_scores.sort_values()
+        top_up = z_sorted.tail(top_n).iloc[::-1]  # plus enrichies
+        top_down = z_sorted.head(top_n)            # plus appauvries
+
+        # Caractéristiques marquantes (|z| > 0.5)
+        significant = z_scores[z_scores.abs() > 0.5].sort_values(ascending=False)
+
+        interpretations[cluster_id] = {
+            "n_patients": len(cluster_data),
+            "patients": list(cluster_data.index),
+            "top_up": top_up,
+            "top_down": top_down,
+            "significant": significant,
+            "cluster_mean": cluster_mean,
+            "global_mean": global_mean,
+        }
+
+    return interpretations
+
+
+def get_gene_signature_per_cluster(df, labels_map):
+    """Identifie les gènes les plus spécifiques à chaque cluster."""
+    signatures = {}
+    for cluster_id, patients in labels_map.items():
+        df_cl = df[df["Pseudo"].isin(patients)]
+        df_rest = df[~df["Pseudo"].isin(patients)]
+
+        # Fréquence du gène dans le cluster vs hors cluster
+        gene_freq_cl = df_cl.groupby("Gene_symbol")["Pseudo"].nunique() / len(patients)
+        gene_freq_rest = df_rest.groupby("Gene_symbol")["Pseudo"].nunique() / max(1, df_rest["Pseudo"].nunique())
+
+        # Ratio d'enrichissement
+        enrichment = (gene_freq_cl / gene_freq_rest.reindex(gene_freq_cl.index).fillna(0.01)).sort_values(ascending=False)
+        # Ne garder que les gènes présents chez >30% du cluster
+        enrichment = enrichment[gene_freq_cl > 0.3]
+
+        # Top gènes pathogènes dans le cluster
+        patho_genes = df_cl[df_cl["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]["Gene_symbol"].value_counts()
+
+        signatures[cluster_id] = {
+            "enriched_genes": enrichment.head(10),
+            "pathogenic_genes": patho_genes.head(10),
+        }
+    return signatures
+
+
+def build_ai_prompt(interpretations, gene_signatures, n_clusters):
+    """Construit le prompt pour l'interprétation par IA."""
+    prompt = """Tu es un expert en génétique clinique et en bioinformatique spécialisé dans 
+l'analyse de variants génomiques somatiques issus de séquençage ciblé (panel de gènes). 
+Le contexte est celui de l'étude de tissus FFPE (thymomes / pathologies thymiques liées aux 
+maladies auto-immunes : myasthénie, polyneuropathie, bronchiolite oblitérante, etc.).
+
+Un clustering non supervisé a été réalisé sur les profils génomiques et cliniques des patients.
+Voici les résultats détaillés pour chaque cluster. Analyse-les et fournis une interprétation 
+clinico-génomique structurée.
+
+"""
+    for cluster_id, interp in interpretations.items():
+        prompt += f"\n{'='*60}\n"
+        prompt += f"## {cluster_id} ({interp['n_patients']} patients)\n"
+        prompt += f"Patients : {', '.join(interp['patients'])}\n\n"
+
+        prompt += "### Features significativement enrichies (z-score > 0.5) :\n"
+        for feat, z in interp['significant'].items():
+            if z > 0:
+                label = FEATURE_LABELS.get(feat, feat)
+                mean_val = interp['cluster_mean'][feat]
+                glob_val = interp['global_mean'][feat]
+                prompt += f"  - {label}: {mean_val:.2f} (moyenne globale: {glob_val:.2f}, z={z:.2f})\n"
+
+        prompt += "\n### Features significativement réduites :\n"
+        for feat, z in interp['significant'].items():
+            if z < 0:
+                label = FEATURE_LABELS.get(feat, feat)
+                mean_val = interp['cluster_mean'][feat]
+                glob_val = interp['global_mean'][feat]
+                prompt += f"  - {label}: {mean_val:.2f} (moyenne globale: {glob_val:.2f}, z={z:.2f})\n"
+
+        if cluster_id in gene_signatures:
+            gs = gene_signatures[cluster_id]
+            if len(gs["pathogenic_genes"]) > 0:
+                prompt += "\n### Gènes avec variants pathogènes dans ce cluster :\n"
+                for gene, count in gs["pathogenic_genes"].head(5).items():
+                    prompt += f"  - {gene}: {count} variants pathogènes\n"
+
+            if len(gs["enriched_genes"]) > 0:
+                prompt += "\n### Gènes enrichis dans ce cluster (vs autres) :\n"
+                for gene, ratio in gs["enriched_genes"].head(5).items():
+                    prompt += f"  - {gene}: enrichissement x{ratio:.1f}\n"
+
+    prompt += f"""
+
+{'='*60}
+## Instructions pour ton analyse :
+
+Pour chaque cluster, fournis :
+
+1. **Signature dominante** : Quel est le profil génomique et clinique principal de ce groupe ?
+2. **Interprétation clinique** : Quelles implications cliniques peut-on déduire ? 
+   Lien avec la pathologie thymique, les complications auto-immunes ?
+3. **Gènes d'intérêt** : Les gènes enrichis ou porteurs de variants pathogènes ont-ils 
+   un rôle connu dans les thymomes ou les maladies auto-immunes ?
+4. **Comparaison inter-clusters** : Qu'est-ce qui distingue fondamentalement ces groupes ?
+
+Termine par une **synthèse globale** qui résume les axes de stratification des patients 
+et les pistes cliniques/biologiques à explorer.
+
+Réponds en français. Sois précis et cliniquement pertinent.
+"""
+    return prompt
+
+
+def call_anthropic_api(prompt, api_key):
+    """Appelle l'API Anthropic pour obtenir une interprétation IA."""
+    client = anthropic.Anthropic(api_key=api_key)
+    message = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return message.content[0].text
+
+
 # ─────────────────────────────────────────────
 # HEADER & CHARGEMENT
 # ─────────────────────────────────────────────
@@ -183,6 +373,17 @@ st.markdown('<p class="main-title">🧬 Variant Explorer</p>', unsafe_allow_html
 st.markdown('<p class="sub-title">Exploration interactive de variants génomiques — Séquençage ciblé</p>', unsafe_allow_html=True)
 
 uploaded_file = st.sidebar.file_uploader("📁 Charger fichier variants (.csv)", type=["csv"])
+
+# API Key dans la sidebar
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🤖 Interprétation IA")
+api_key = st.sidebar.text_input(
+    "Clé API Anthropic",
+    type="password",
+    help="Optionnel. Permet une interprétation narrative des clusters par Claude. "
+         "Obtenez une clé sur console.anthropic.com",
+)
+
 if uploaded_file is None:
     st.info("👈 **Chargez votre fichier CSV** via la barre latérale pour commencer.")
     st.stop()
@@ -312,11 +513,11 @@ with tab_pat:
 
     st.markdown("### Données cliniques")
     ac_clin = [c for c in CLINICAL_COLS if c in dp.columns]
-    cr = dp[ac_clin].dropna(how="all").head(1)
-    if len(cr) > 0:
+    cr_row = dp[ac_clin].dropna(how="all").head(1)
+    if len(cr_row) > 0:
         cols = st.columns(len(ac_clin))
         for i, cn in enumerate(ac_clin):
-            v = cr[cn].values[0]; cols[i].metric(cn, str(v) if pd.notna(v) else "—")
+            v = cr_row[cn].values[0]; cols[i].metric(cn, str(v) if pd.notna(v) else "—")
 
     st.markdown("---")
     p1, p2, p3, p4 = st.columns(4)
@@ -432,17 +633,19 @@ with tab_acmg:
         height=max(400, len(hm_pct)*22), xaxis_title="% variants", margin=dict(l=100))
     st.plotly_chart(fig, use_container_width=True)
 
-# ═══════ CLUSTERING ═══════
+
+# ═══════════════════════════════════════════════════════
+# CLUSTERING + INTERPRÉTATION
+# ═══════════════════════════════════════════════════════
 with tab_clust:
     st.markdown("## 🔬 Clustering des patients")
     st.markdown(
         "Identification de groupes de patients partageant des **signatures génomiques et/ou cliniques** "
-        "similaires via **UMAP** + clustering."
+        "similaires via **UMAP** + clustering, avec interprétation statistique et IA."
     )
 
     if df_f["Pseudo"].nunique() < 5:
-        st.warning("Au moins 5 patients nécessaires. Élargissez vos filtres.")
-        st.stop()
+        st.warning("Au moins 5 patients nécessaires."); st.stop()
 
     st.markdown("### Paramètres")
     cp1, cp2, cp3 = st.columns(3)
@@ -455,10 +658,8 @@ with tab_clust:
     with cc2: n_clust = st.slider("Nb clusters", 2, 8, 3)
 
     cu1, cu2 = st.columns(2)
-    with cu1: n_neigh = st.slider("UMAP n_neighbors", 3, 30, 10,
-                                   help="Petit = plus de détails locaux")
-    with cu2: m_dist = st.slider("UMAP min_dist", 0.0, 1.0, 0.3, 0.05,
-                                  help="Petit = clusters plus compacts")
+    with cu1: n_neigh = st.slider("UMAP n_neighbors", 3, 30, 10)
+    with cu2: m_dist = st.slider("UMAP min_dist", 0.0, 1.0, 0.3, 0.05)
 
     if not use_gen and not use_clin:
         st.warning("Sélectionnez au moins un type de features."); st.stop()
@@ -484,10 +685,11 @@ with tab_clust:
         labs = mdl.fit_predict(X)
         sil = silhouette_score(X, labs) if len(set(labs)) > 1 else 0
 
+    cluster_labels = [f"Cluster {l}" for l in labs]
+
     df_u = pd.DataFrame({
         "UMAP_1": emb[:, 0], "UMAP_2": emb[:, 1],
-        "Cluster": [f"Cluster {l}" for l in labs],
-        "Patient": df_feat.index,
+        "Cluster": cluster_labels, "Patient": df_feat.index,
     })
     for col in df_feat.columns:
         if col.startswith("n_") or col.startswith("median_") or col in [
@@ -503,7 +705,7 @@ with tab_clust:
     m2.metric("Silhouette", f"{sil:.3f}")
     m3.metric("Features", df_feat.shape[1])
 
-    # UMAP plot
+    # UMAP
     st.markdown("### Projection UMAP")
     fig = px.scatter(df_u, x="UMAP_1", y="UMAP_2", color="Cluster", text="Patient",
         hover_data=["Patient", "Cluster"] +
@@ -524,10 +726,10 @@ with tab_clust:
             paper_bgcolor="rgba(0,0,0,0)", height=400, xaxis_tickangle=-90, margin=dict(b=120))
         st.plotly_chart(fig_d, use_container_width=True)
 
-    # Profil clusters
+    # Heatmap profil
     st.markdown("### Profil des clusters")
     df_fc = df_feat.copy()
-    df_fc["Cluster"] = [f"Cluster {l}" for l in labs]
+    df_fc["Cluster"] = cluster_labels
 
     key_gen = [c for c in df_fc.columns if c in [
         "n_Pathogenic", "n_Likely Pathogenic", "n_VUS", "n_Likely Benign", "n_Benign",
@@ -542,14 +744,12 @@ with tab_clust:
     if key_feat:
         cp = df_fc.groupby("Cluster")[key_feat].mean().round(2)
         fig = px.imshow(cp.T, color_continuous_scale="YlOrRd", aspect="auto",
-            labels=dict(x="Cluster", y="Feature", color="Moyenne"),
-            text_auto=".2f")
+            labels=dict(x="Cluster", y="Feature", color="Moyenne"), text_auto=".2f")
         fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)", height=max(400, len(key_feat)*25),
-            margin=dict(l=200))
+            paper_bgcolor="rgba(0,0,0,0)", height=max(400, len(key_feat)*25), margin=dict(l=200))
         st.plotly_chart(fig, use_container_width=True)
 
-    # Barplot clinique
+    # Barplots
     if use_clin and key_clin:
         st.markdown("### Profil clinique par cluster")
         cm = df_fc.groupby("Cluster")[key_clin].mean()
@@ -560,7 +760,6 @@ with tab_clust:
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=450)
         st.plotly_chart(fig, use_container_width=True)
 
-    # Barplot ACMG
     if use_gen:
         st.markdown("### Profil ACMG par cluster")
         acmg_c = [f"n_{c}" for c in ACMG_ORDER if f"n_{c}" in df_fc.columns]
@@ -576,6 +775,134 @@ with tab_clust:
                 title="ACMG moyen par cluster", yaxis_title="Variants (moy)")
             st.plotly_chart(fig, use_container_width=True)
 
+    # ─────────────────────────────────────────────────────
+    # INTERPRÉTATION STATISTIQUE
+    # ─────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("## 🧠 Interprétation des clusters")
+
+    if key_feat:
+        interpretations = compute_cluster_interpretation(df_feat, cluster_labels, key_feat)
+        labels_map = {}
+        for cl_id, interp in interpretations.items():
+            labels_map[cl_id] = interp["patients"]
+
+        gene_signatures = get_gene_signature_per_cluster(df_f, labels_map)
+
+        st.markdown("### 📊 Interprétation statistique")
+        st.markdown(
+            "Pour chaque cluster, les features sont comparées à la **moyenne globale** via un z-score. "
+            "Les features avec |z| > 0.5 sont considérées comme **discriminantes**."
+        )
+
+        for cluster_id in sorted(interpretations.keys()):
+            interp = interpretations[cluster_id]
+
+            with st.expander(f"🔹 {cluster_id} — {interp['n_patients']} patients ({', '.join(interp['patients'])})", expanded=True):
+
+                # Features discriminantes
+                sig = interp["significant"]
+                if len(sig) > 0:
+                    enriched = sig[sig > 0]
+                    depleted = sig[sig < 0]
+
+                    col_e, col_d = st.columns(2)
+
+                    with col_e:
+                        st.markdown("**🔺 Enrichi par rapport à la cohorte**")
+                        for feat, z in enriched.items():
+                            label = FEATURE_LABELS.get(feat, feat)
+                            val = interp["cluster_mean"][feat]
+                            glob = interp["global_mean"][feat]
+                            st.markdown(
+                                f'<span class="feat-up">▲ {label}</span> : '
+                                f'{val:.2f} vs {glob:.2f} (z={z:+.2f})',
+                                unsafe_allow_html=True,
+                            )
+
+                    with col_d:
+                        st.markdown("**🔻 Réduit par rapport à la cohorte**")
+                        for feat, z in depleted.items():
+                            label = FEATURE_LABELS.get(feat, feat)
+                            val = interp["cluster_mean"][feat]
+                            glob = interp["global_mean"][feat]
+                            st.markdown(
+                                f'<span class="feat-down">▼ {label}</span> : '
+                                f'{val:.2f} vs {glob:.2f} (z={z:+.2f})',
+                                unsafe_allow_html=True,
+                            )
+                else:
+                    st.info("Aucune feature significativement discriminante pour ce cluster.")
+
+                # Gènes spécifiques
+                if cluster_id in gene_signatures:
+                    gs = gene_signatures[cluster_id]
+                    col_pg, col_eg = st.columns(2)
+                    with col_pg:
+                        if len(gs["pathogenic_genes"]) > 0:
+                            st.markdown("**🧬 Gènes avec variants pathogènes :**")
+                            for gene_name, count in gs["pathogenic_genes"].head(5).items():
+                                st.markdown(f"- **{gene_name}** : {count} variant(s)")
+                    with col_eg:
+                        if len(gs["enriched_genes"]) > 0:
+                            st.markdown("**📈 Gènes enrichis (vs autres clusters) :**")
+                            for gene_name, ratio in gs["enriched_genes"].head(5).items():
+                                st.markdown(f"- **{gene_name}** : ×{ratio:.1f}")
+
+        # ─────────────────────────────────────────────────────
+        # INTERPRÉTATION IA
+        # ─────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 🤖 Interprétation par Intelligence Artificielle")
+
+        if not ANTHROPIC_AVAILABLE:
+            st.warning(
+                "Le package `anthropic` n'est pas installé. "
+                "Ajoutez `anthropic` à votre `requirements.txt` pour activer cette fonctionnalité."
+            )
+        elif not api_key:
+            st.info(
+                "💡 Pour obtenir une interprétation narrative par IA, entrez votre **clé API Anthropic** "
+                "dans la barre latérale. L'IA analysera les profils de chaque cluster et fournira "
+                "une interprétation clinico-génomique détaillée.\n\n"
+                "👉 Obtenez une clé sur [console.anthropic.com](https://console.anthropic.com)"
+            )
+        else:
+            if st.button("🧠 Lancer l'interprétation IA", type="primary", use_container_width=True):
+                with st.spinner("Claude analyse vos clusters... (30-60 secondes)"):
+                    try:
+                        prompt = build_ai_prompt(interpretations, gene_signatures, n_clust)
+                        ai_response = call_anthropic_api(prompt, api_key)
+
+                        st.markdown(
+                            f'<div class="ai-interpretation">'
+                            f'<h4>🤖 Analyse par Claude</h4>'
+                            f'{ai_response}'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                        # Stocker en session pour ne pas refaire l'appel
+                        st.session_state["ai_interpretation"] = ai_response
+
+                    except anthropic.AuthenticationError:
+                        st.error("❌ Clé API invalide. Vérifiez votre clé dans la barre latérale.")
+                    except anthropic.RateLimitError:
+                        st.error("⏳ Limite de requêtes atteinte. Réessayez dans quelques instants.")
+                    except Exception as e:
+                        st.error(f"Erreur lors de l'appel API : {str(e)}")
+
+            # Afficher l'interprétation précédente si elle existe
+            elif "ai_interpretation" in st.session_state:
+                st.markdown(
+                    f'<div class="ai-interpretation">'
+                    f'<h4>🤖 Analyse par Claude (précédente)</h4>'
+                    f'{st.session_state["ai_interpretation"]}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+    # Export
     st.markdown("### Export")
     exp = df_u[["Patient", "Cluster", "UMAP_1", "UMAP_2"]].to_csv(index=False, sep=";")
     st.download_button("📥 Clusters (CSV)", exp, "clusters.csv", "text/csv")
@@ -583,4 +910,4 @@ with tab_clust:
 # Footer
 st.markdown("---")
 st.markdown('<p style="text-align:center;color:#4a5568;font-size:0.85rem;">'
-    '🧬 Variant Explorer v2.0 — Données locales uniquement</p>', unsafe_allow_html=True)
+    '🧬 Variant Explorer v3.0 — Données locales uniquement</p>', unsafe_allow_html=True)
