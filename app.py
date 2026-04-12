@@ -541,8 +541,13 @@ with tab_clust:
 
     if key_feat:
         cp = df_fc.groupby("Cluster")[key_feat].mean().round(2)
-        st.dataframe(cp.T.style.background_gradient(cmap="YlOrRd", axis=1),
-                     use_container_width=True, height=500)
+        fig = px.imshow(cp.T, color_continuous_scale="YlOrRd", aspect="auto",
+            labels=dict(x="Cluster", y="Feature", color="Moyenne"),
+            text_auto=".2f")
+        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)", height=max(400, len(key_feat)*25),
+            margin=dict(l=200))
+        st.plotly_chart(fig, use_container_width=True)
 
     # Barplot clinique
     if use_clin and key_clin:
