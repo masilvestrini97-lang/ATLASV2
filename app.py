@@ -718,11 +718,11 @@ with tab_coocc:
             top_entities = binary.sum().sort_values(ascending=False).head(n_entities).index
             binary_top = binary[top_entities]
 
-            coocc_matrix = binary_top.T.dot(binary_top)
+            coocc_matrix = binary_top.T.dot(binary_top).astype(float)
             # Normaliser par Jaccard : |A∩B| / |A∪B|
             for i in range(len(coocc_matrix)):
                 for j in range(len(coocc_matrix)):
-                    union = (binary_top.iloc[:, i] | binary_top.iloc[:, j]).sum()
+                    union = int((binary_top.iloc[:, i] | binary_top.iloc[:, j]).sum())
                     coocc_matrix.iloc[i, j] = coocc_matrix.iloc[i, j] / max(union, 1)
 
             fig = px.imshow(coocc_matrix, color_continuous_scale="YlOrRd",
