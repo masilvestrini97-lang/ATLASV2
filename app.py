@@ -85,26 +85,25 @@ CLINICAL_COLS = ["Histo UCD", "Complication", "Chirurgie", "Auto Ac", "Recidive"
 
 # Noms lisibles des features pour l'interprétation
 FEATURE_LABELS = {
-    "n_Pathogenic": "Variants Pathogènes",
-    "n_Likely Pathogenic": "Variants Likely Pathogenic",
-    "n_VUS": "Variants de Signification Incertaine (VUS)",
-    "n_Likely Benign": "Variants Likely Benign",
-    "n_Benign": "Variants Benign",
-    "n_impact_high": "Variants à impact HIGH",
-    "n_impact_moderate": "Variants à impact MODERATE",
-    "n_impact_low": "Variants à impact LOW",
-    "n_impact_modifier": "Variants MODIFIER",
-    "n_missensevariant": "Variants Missense",
-    "n_frameshiftvariant": "Variants Frameshift",
-    "n_stopgained": "Variants Stop Gained",
-    "n_spliceregionvariant": "Variants Splice Region",
-    "n_spliceacceptorvariant": "Variants Splice Acceptor",
-    "n_splicedonorvariant": "Variants Splice Donor",
+    "pct_Pathogenic": "% Variants Pathogènes",
+    "pct_Likely Pathogenic": "% Variants Likely Pathogenic",
+    "pct_VUS": "% VUS",
+    "pct_Likely Benign": "% Likely Benign",
+    "pct_Benign": "% Benign",
+    "pct_impact_high": "% Impact HIGH",
+    "pct_impact_moderate": "% Impact MODERATE",
+    "pct_impact_low": "% Impact LOW",
+    "pct_impact_modifier": "% MODIFIER",
+    "pct_missensevariant": "% Missense",
+    "pct_frameshiftvariant": "% Frameshift",
+    "pct_stopgained": "% Stop Gained",
+    "pct_spliceregionvariant": "% Splice Region",
+    "pct_spliceacceptorvariant": "% Splice Acceptor",
+    "pct_splicedonorvariant": "% Splice Donor",
     "median_CADD": "Score CADD médian",
     "median_AR": "Ratio allélique médian",
-    "median_depth": "Profondeur médiane",
-    "n_total_variants": "Nombre total de variants",
-    "n_unique_genes": "Nombre de gènes uniques",
+    "mean_gnomAD_AF": "Fréquence gnomAD moyenne",
+    "n_unique_genes": "Gènes uniques touchés",
     "Histo_HV": "Histologie HV",
     "Histo_mixed": "Histologie mixed",
     "Complication": "Complications",
@@ -167,31 +166,50 @@ def load_data(uploaded_file):
 
 
 def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=30):
+    """
+    Matrice de features par patient pour clustering.
+    
+    IMPORTANT : utilise des PROPORTIONS (%) et des features binaires
+    plutôt que des comptages bruts, afin de ne pas biaiser le clustering
+    par la qualité de l'ADN / le nombre total de variants.
+    """
     patients = df["Pseudo"].unique()
     features = {}
 
     for pseudo in patients:
         dp = df[df["Pseudo"] == pseudo]
         row = {}
-        if use_genomic:
+        n_total = len(dp)
+
+        if use_genomic and n_total > 0:
+            # ── Proportions ACMG (%) ──
             acmg_vc = dp["ACMG_class"].value_counts()
             for cls in ACMG_ORDER:
-                row[f"n_{cls}"] = acmg_vc.get(cls, 0)
+                row[f"pct_{cls}"] = (acmg_vc.get(cls, 0) / n_total) * 100
+
+            # ── Proportions par impact (%) ──
             impact_vc = dp["Putative_impact"].value_counts()
             for imp in IMPACT_ORDER:
-                row[f"n_impact_{imp}"] = impact_vc.get(imp, 0)
+                row[f"pct_impact_{imp}"] = (impact_vc.get(imp, 0) / n_total) * 100
+
+            # ── Proportions par type de variant clé (%) ──
             for eff in ["missensevariant", "frameshiftvariant", "stopgained",
                         "spliceregionvariant", "spliceacceptorvariant", "splicedonorvariant"]:
-                row[f"n_{eff}"] = len(dp[dp["Variant_effect"] == eff])
+                row[f"pct_{eff}"] = (len(dp[dp["Variant_effect"] == eff]) / n_total) * 100
+
+            # ── Métriques continues (non affectées par le nb de variants) ──
             row["median_CADD"] = dp["CADD_phred"].median() if dp["CADD_phred"].notna().any() else 0
             row["median_AR"] = dp["Allelic_ratio"].median()
-            row["median_depth"] = dp["Depth"].median()
-            row["n_total_variants"] = len(dp)
+            row["mean_gnomAD_AF"] = dp["gnomad_exomes_AF"].mean() if dp["gnomad_exomes_AF"].notna().any() else 0
+
+            # ── Diversité génique (nombre de gènes uniques touchés) ──
             row["n_unique_genes"] = dp["Gene_symbol"].nunique()
+
         features[pseudo] = row
 
     df_feat = pd.DataFrame.from_dict(features, orient="index")
 
+    # ── Gènes : features BINAIRES (muté oui/non) ──
     if use_genomic:
         top_genes = df["Gene_symbol"].value_counts().head(top_n_genes).index.tolist()
         for gene in top_genes:
@@ -296,6 +314,14 @@ Le contexte est celui de l'étude de tissus FFPE (thymomes / pathologies thymiqu
 maladies auto-immunes : myasthénie, polyneuropathie, bronchiolite oblitérante, etc.).
 
 Un clustering non supervisé a été réalisé sur les profils génomiques et cliniques des patients.
+
+MÉTHODOLOGIE IMPORTANTE :
+- Les variants ont été filtrés par qualité avant le clustering (profondeur, ratio allélique, 
+  fréquence gnomAD) pour éliminer les artéfacts FFPE et les polymorphismes fréquents.
+- Les features génomiques utilisent des PROPORTIONS (%) et non des comptages bruts, 
+  afin de ne pas biaiser le clustering par la qualité de l'ADN ou le nombre total de variants.
+- Les features de gènes sont binaires (gène muté oui/non dans le patient).
+
 Voici les résultats détaillés pour chaque cluster. Analyse-les et fournis une interprétation 
 clinico-génomique structurée.
 
@@ -647,7 +673,61 @@ with tab_clust:
     if df_f["Pseudo"].nunique() < 5:
         st.warning("Au moins 5 patients nécessaires."); st.stop()
 
-    st.markdown("### Paramètres")
+    # ── FILTRES QUALITÉ PRÉ-CLUSTERING ──
+    st.markdown("### 🧹 Filtres qualité (pré-clustering)")
+    st.markdown(
+        "> Ces filtres s'appliquent **uniquement au clustering** pour ne conserver que les variants "
+        "fiables et informatifs. En FFPE, la qualité de l'ADN varie entre échantillons : "
+        "sans filtrage, le clustering regrouperait les patients par qualité d'ADN plutôt que par biologie."
+    )
+
+    qc1, qc2, qc3, qc4 = st.columns(4)
+    with qc1:
+        cl_depth_min = st.number_input("Profondeur min", min_value=0, value=100, step=50,
+            key="cl_depth", help="Exclut les variants à faible couverture (artéfacts FFPE)")
+    with qc2:
+        cl_ar_min = st.number_input("Ratio allélique min", min_value=0.0, value=0.05, step=0.01,
+            format="%.2f", key="cl_ar", help="Exclut le bruit de fond (AR très bas)")
+    with qc3:
+        cl_af_max = st.number_input("gnomAD AF max", min_value=0.0, value=0.01, step=0.005,
+            format="%.3f", key="cl_af", help="Exclut les polymorphismes fréquents (non informatifs)")
+    with qc4:
+        cl_exclude_benign = st.checkbox("Exclure Benign / Likely Benign", value=True,
+            help="Focus sur les variants potentiellement pathogènes")
+
+    # Appliquer les filtres qualité
+    df_clust = df_f[
+        (df_f["Depth"] >= cl_depth_min) &
+        (df_f["Allelic_ratio"] >= cl_ar_min) &
+        (df_f["gnomad_exomes_AF"].fillna(0) <= cl_af_max)
+    ].copy()
+
+    if cl_exclude_benign:
+        df_clust = df_clust[~df_clust["ACMG_class"].isin(["Benign", "Likely Benign"])]
+
+    # Métriques post-filtre
+    n_before = len(df_f)
+    n_after = len(df_clust)
+    n_patients_after = df_clust["Pseudo"].nunique()
+
+    qm1, qm2, qm3, qm4 = st.columns(4)
+    qm1.metric("Variants avant filtre", f"{n_before:,}")
+    qm2.metric("Variants après filtre", f"{n_after:,}")
+    qm3.metric("% conservés", f"{n_after/max(n_before,1)*100:.1f}%")
+    qm4.metric("Patients conservés", n_patients_after)
+
+    if n_patients_after < 5:
+        st.error("Moins de 5 patients après filtrage. Assouplissez les filtres qualité.")
+        st.stop()
+    if n_after < 50:
+        st.warning("Très peu de variants conservés. Les résultats pourraient être instables.")
+
+    st.markdown("---")
+    st.markdown("### ⚙️ Paramètres du clustering")
+    st.markdown(
+        "> Le clustering utilise des **proportions** (% de variants par classe ACMG, par type, par impact) "
+        "et des **features binaires** (gène muté oui/non) pour éviter tout biais lié au nombre total de variants."
+    )
     cp1, cp2, cp3 = st.columns(3)
     with cp1: use_gen = st.checkbox("Features génomiques", True)
     with cp2: use_clin = st.checkbox("Features cliniques", True)
@@ -664,8 +744,8 @@ with tab_clust:
     if not use_gen and not use_clin:
         st.warning("Sélectionnez au moins un type de features."); st.stop()
 
-    with st.spinner("Construction matrice de features..."):
-        df_feat = build_patient_features(df_f, use_gen, use_clin, top_n)
+    with st.spinner("Construction matrice de features (proportions + binaire)..."):
+        df_feat = build_patient_features(df_clust, use_gen, use_clin, top_n)
 
     st.markdown(f"**{df_feat.shape[0]} patients × {df_feat.shape[1]} features**")
 
@@ -692,8 +772,8 @@ with tab_clust:
         "Cluster": cluster_labels, "Patient": df_feat.index,
     })
     for col in df_feat.columns:
-        if col.startswith("n_") or col.startswith("median_") or col in [
-            "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
+        if col.startswith("pct_") or col.startswith("median_") or col.startswith("mean_") or col in [
+            "n_unique_genes", "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
             "Recidive", "BO", "PNP", "MG", "FDSCS"]:
             df_u[col] = df_feat[col].values
 
@@ -707,9 +787,10 @@ with tab_clust:
 
     # UMAP
     st.markdown("### Projection UMAP")
+    hover_extra = [c for c in ["pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS", "n_unique_genes"]
+                   if c in df_u.columns]
     fig = px.scatter(df_u, x="UMAP_1", y="UMAP_2", color="Cluster", text="Patient",
-        hover_data=["Patient", "Cluster"] +
-            [c for c in ["n_Pathogenic", "n_Likely Pathogenic", "n_VUS", "n_total_variants"] if c in df_u.columns],
+        hover_data=["Patient", "Cluster"] + hover_extra,
         color_discrete_sequence=ccols)
     fig.update_traces(textposition="top center", textfont_size=10, marker_size=12)
     fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
@@ -732,10 +813,10 @@ with tab_clust:
     df_fc["Cluster"] = cluster_labels
 
     key_gen = [c for c in df_fc.columns if c in [
-        "n_Pathogenic", "n_Likely Pathogenic", "n_VUS", "n_Likely Benign", "n_Benign",
-        "n_impact_high", "n_impact_moderate", "n_impact_low",
-        "n_missensevariant", "n_frameshiftvariant", "n_stopgained",
-        "median_CADD", "median_AR", "n_total_variants", "n_unique_genes"]]
+        "pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS", "pct_Likely Benign", "pct_Benign",
+        "pct_impact_high", "pct_impact_moderate", "pct_impact_low",
+        "pct_missensevariant", "pct_frameshiftvariant", "pct_stopgained",
+        "median_CADD", "median_AR", "mean_gnomAD_AF", "n_unique_genes"]]
     key_clin = [c for c in df_fc.columns if c in [
         "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
         "Recidive", "BO", "PNP", "MG", "FDSCS"]]
@@ -762,17 +843,17 @@ with tab_clust:
 
     if use_gen:
         st.markdown("### Profil ACMG par cluster")
-        acmg_c = [f"n_{c}" for c in ACMG_ORDER if f"n_{c}" in df_fc.columns]
+        acmg_c = [f"pct_{c}" for c in ACMG_ORDER if f"pct_{c}" in df_fc.columns]
         if acmg_c:
             am = df_fc.groupby("Cluster")[acmg_c].mean()
-            am.columns = [c.replace("n_", "") for c in am.columns]
+            am.columns = [c.replace("pct_", "") for c in am.columns]
             fig = go.Figure()
             for cls in am.columns:
                 fig.add_trace(go.Bar(name=cls, x=am.index, y=am[cls],
                     marker_color=ACMG_COLORS.get(cls, "#888")))
             fig.update_layout(barmode="stack", template="plotly_dark",
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=450,
-                title="ACMG moyen par cluster", yaxis_title="Variants (moy)")
+                title="Répartition ACMG par cluster (%)", yaxis_title="% moyen")
             st.plotly_chart(fig, use_container_width=True)
 
     # ─────────────────────────────────────────────────────
