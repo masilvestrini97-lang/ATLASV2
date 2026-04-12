@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                  VARIANT EXPLORER v3.0                       ║
+║                  VARIANT EXPLORER v4.0                       ║
 ║          Outil interactif d'exploration de variants          ║
 ║              génomiques pour données de séquençage           ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -16,6 +16,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans, AgglomerativeClustering
 from sklearn.metrics import silhouette_score
 from scipy.cluster.hierarchy import linkage
+from scipy.stats import fisher_exact
 import umap
 import json
 
@@ -28,12 +29,7 @@ except ImportError:
 # ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="Variant Explorer",
-    page_icon="🧬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Variant Explorer", page_icon="🧬", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -54,12 +50,6 @@ st.markdown("""
         font-size: 2.4rem; font-weight: 700; margin-bottom: 0;
     }
     .sub-title { color: #8892b0; font-size: 1.05rem; margin-top: 0; }
-    .cluster-card {
-        background: linear-gradient(135deg, #1a1a2e, #16213e);
-        border: 1px solid #0f3460; border-radius: 12px;
-        padding: 20px; margin: 10px 0;
-    }
-    .cluster-card h4 { color: #64ffda; margin-top: 0; }
     .feat-up { color: #ff6b6b; font-weight: 600; }
     .feat-down { color: #4ecdc4; font-weight: 600; }
     .ai-interpretation {
@@ -83,137 +73,71 @@ ACMG_COLORS = {
 ACMG_ORDER = ["Pathogenic", "Likely Pathogenic", "VUS", "Likely Benign", "Benign"]
 CLINICAL_COLS = ["Histo UCD", "Complication", "Chirurgie", "Auto Ac", "Recidive", "BO", "PNP", "MG", "FDSCS"]
 
-# Noms lisibles des features pour l'interprétation
-FEATURE_LABELS = {
-    "pct_Pathogenic": "% Variants Pathogènes",
-    "pct_Likely Pathogenic": "% Variants Likely Pathogenic",
-    "pct_VUS": "% VUS",
-    "pct_Likely Benign": "% Likely Benign",
-    "pct_Benign": "% Benign",
-    "pct_impact_high": "% Impact HIGH",
-    "pct_impact_moderate": "% Impact MODERATE",
-    "pct_impact_low": "% Impact LOW",
-    "pct_impact_modifier": "% MODIFIER",
-    "pct_missensevariant": "% Missense",
-    "pct_frameshiftvariant": "% Frameshift",
-    "pct_stopgained": "% Stop Gained",
-    "pct_spliceregionvariant": "% Splice Region",
-    "pct_spliceacceptorvariant": "% Splice Acceptor",
-    "pct_splicedonorvariant": "% Splice Donor",
-    "pct_disruptiveinframedeletion": "% Délétion in-frame disruptive",
-    "pct_startlost": "% Start Lost",
-    "impact_score_mean": "Score d'impact moyen",
-    "impact_score_max": "Score d'impact maximal",
-    "impact_score_p75": "Score d'impact P75",
-    "pct_high_impact_score": "% Variants à haut impact (score≥6)",
-    "median_CADD": "Score CADD médian",
-    "median_AR": "Ratio allélique médian",
-    "mean_gnomAD_AF": "Fréquence gnomAD NFE moyenne",
-    "n_unique_genes": "Gènes uniques touchés",
-    "Histo_HV": "Histologie HV",
-    "Histo_mixed": "Histologie mixed",
-    "Complication": "Complications",
-    "Chirurgie": "Chirurgie",
-    "Recidive": "Récidive",
-    "BO": "Bronchiolite oblitérante (BO)",
-    "PNP": "Polyneuropathie (PNP)",
-    "MG": "Myasthénie (MG)",
-    "FDSCS": "FDSCS",
-}
-
-
-# ─────────────────────────────────────────────
-# FONCTIONS
-# ─────────────────────────────────────────────
-def classify_acmg(row):
-    clinvar = str(row.get("Clinvar_significance", "")).lower().strip()
-    cadd = row.get("CADD_phred", 0)
-    gnomad = row.get("gnomad_exomes_NFE_AF", None)
-    impact = str(row.get("Putative_impact", "")).lower().strip()
-
-    if clinvar in ("pathogenic", "pathogeniclikelypathogenic"):
-        return "Pathogenic"
-    if clinvar == "likelypathogenic":
-        return "Likely Pathogenic"
-    if clinvar in ("benign", "benignlikelybenign"):
-        return "Benign"
-    if clinvar == "likelybenign":
-        return "Likely Benign"
-    if impact == "high":
-        if pd.notna(gnomad) and gnomad < 0.001:
-            return "Likely Pathogenic"
-        return "VUS"
-    if pd.notna(gnomad) and gnomad > 0.05:
-        return "Likely Benign"
-    if pd.notna(cadd) and cadd > 25 and impact == "moderate":
-        if pd.notna(gnomad) and gnomad < 0.01:
-            return "VUS"
-    return "VUS"
-
-
-# Variant effects considérés comme non-fonctionnels (exclure du clustering)
 NON_FUNCTIONAL_EFFECTS = {
-    "synonymousvariant",
-    "intronvariant",
-    "3primeutrvariant",
-    "5primeutrvariant",
-    "upstreamgenevariant",
-    "downstreamgenevariant",
-    "intragenicvariant",
+    "synonymousvariant", "intronvariant", "3primeutrvariant", "5primeutrvariant",
+    "upstreamgenevariant", "downstreamgenevariant", "intragenicvariant",
     "5primeutrprematurestartcodongainvariant",
 }
 
+FEATURE_LABELS = {
+    "pct_Pathogenic": "% Pathogènes", "pct_Likely Pathogenic": "% Likely Pathogenic",
+    "pct_VUS": "% VUS", "pct_Likely Benign": "% Likely Benign", "pct_Benign": "% Benign",
+    "pct_impact_high": "% Impact HIGH", "pct_impact_moderate": "% Impact MODERATE",
+    "pct_impact_low": "% Impact LOW", "pct_impact_modifier": "% MODIFIER",
+    "pct_missensevariant": "% Missense", "pct_frameshiftvariant": "% Frameshift",
+    "pct_stopgained": "% Stop Gained", "pct_spliceregionvariant": "% Splice Region",
+    "pct_spliceacceptorvariant": "% Splice Acceptor", "pct_splicedonorvariant": "% Splice Donor",
+    "pct_disruptiveinframedeletion": "% Dél. in-frame disruptive", "pct_startlost": "% Start Lost",
+    "impact_score_mean": "Score impact moyen", "impact_score_max": "Score impact max",
+    "impact_score_p75": "Score impact P75", "pct_high_impact_score": "% Haut impact (≥6)",
+    "median_CADD": "CADD médian", "median_AR": "AR médian",
+    "mean_gnomAD_AF": "gnomAD NFE moyen", "n_unique_genes": "Gènes uniques",
+    "Histo_HV": "Histo HV", "Histo_mixed": "Histo mixed",
+    "Complication": "Complications", "Chirurgie": "Chirurgie", "Recidive": "Récidive",
+    "BO": "BO", "PNP": "PNP", "MG": "MG", "FDSCS": "FDSCS",
+}
 
-def compute_variant_impact_score(row):
-    """
-    Score d'impact composite par variant (0-10).
-    
-    Combine 4 dimensions :
-    - Impact fonctionnel prédit : HIGH=4, MODERATE=2, LOW=0.5
-    - Score CADD normalisé (0-2) : délétèrité in silico
-    - Rareté allélique (0-2) : plus rare = plus suspect
-    - ClinVar (0-2) : classification clinique connue
-    """
-    score = 0.0
-    
-    # 1. Impact fonctionnel (0-4)
-    impact = str(row.get("Putative_impact", "")).lower()
-    score += {"high": 4.0, "moderate": 2.0, "low": 0.5, "modifier": 0.0}.get(impact, 0)
-    
-    # 2. CADD normalisé (0-2)
-    cadd = row.get("CADD_phred", None)
-    if pd.notna(cadd):
-        score += min(cadd / 20.0, 2.0)
-    
-    # 3. Rareté allélique (0-2)
+# ─────────────────────────────────────────────
+# FONCTIONS CORE
+# ─────────────────────────────────────────────
+def classify_acmg(row):
+    clinvar = str(row.get("Clinvar_significance", "")).lower().strip()
     gnomad = row.get("gnomad_exomes_NFE_AF", None)
-    if pd.isna(gnomad) or gnomad == 0:
-        score += 2.0
-    elif gnomad < 0.0001:
-        score += 1.8
-    elif gnomad < 0.001:
-        score += 1.5
-    elif gnomad < 0.01:
-        score += 1.0
-    elif gnomad < 0.05:
-        score += 0.3
-    
-    # 4. ClinVar (0-2)
+    impact = str(row.get("Putative_impact", "")).lower().strip()
+    cadd = row.get("CADD_phred", 0)
+    if clinvar in ("pathogenic", "pathogeniclikelypathogenic"): return "Pathogenic"
+    if clinvar == "likelypathogenic": return "Likely Pathogenic"
+    if clinvar in ("benign", "benignlikelybenign"): return "Benign"
+    if clinvar == "likelybenign": return "Likely Benign"
+    if impact == "high":
+        return "Likely Pathogenic" if pd.notna(gnomad) and gnomad < 0.001 else "VUS"
+    if pd.notna(gnomad) and gnomad > 0.05: return "Likely Benign"
+    if pd.notna(cadd) and cadd > 25 and impact == "moderate":
+        if pd.notna(gnomad) and gnomad < 0.01: return "VUS"
+    return "VUS"
+
+
+def compute_impact_score(row):
+    score = {"high": 4.0, "moderate": 2.0, "low": 0.5, "modifier": 0.0}.get(
+        str(row.get("Putative_impact", "")).lower(), 0)
+    cadd = row.get("CADD_phred", None)
+    if pd.notna(cadd): score += min(cadd / 20.0, 2.0)
+    gnomad = row.get("gnomad_exomes_NFE_AF", None)
+    if pd.isna(gnomad) or gnomad == 0: score += 2.0
+    elif gnomad < 0.0001: score += 1.8
+    elif gnomad < 0.001: score += 1.5
+    elif gnomad < 0.01: score += 1.0
+    elif gnomad < 0.05: score += 0.3
     clinvar = str(row.get("Clinvar_significance", "")).lower()
-    clinvar_w = {
-        "pathogenic": 2.0, "pathogeniclikelypathogenic": 2.0,
-        "likelypathogenic": 1.5, "uncertainsignificance": 0.5,
-        "conflictinginterpretationsofpathogenicity": 0.3, "riskfactor": 0.5,
-    }
-    score += clinvar_w.get(clinvar, 0)
-    
+    score += {"pathogenic": 2.0, "pathogeniclikelypathogenic": 2.0,
+              "likelypathogenic": 1.5, "uncertainsignificance": 0.5,
+              "conflictinginterpretationsofpathogenicity": 0.3, "riskfactor": 0.5}.get(clinvar, 0)
     return round(score, 2)
 
 
 def extract_chrom(v):
     try: return f"chr{str(v).split(':')[0]}"
     except: return "Unknown"
-
 
 def extract_pos(v):
     try: return int(str(v).split(':')[1])
@@ -226,20 +150,111 @@ def load_data(uploaded_file):
     df["Chromosome"] = df["Variant"].apply(extract_chrom)
     df["Position"] = df["Variant"].apply(extract_pos)
     df["ACMG_class"] = df.apply(classify_acmg, axis=1)
-    df["impact_score"] = df.apply(compute_variant_impact_score, axis=1)
+    df["impact_score"] = df.apply(compute_impact_score, axis=1)
     df.columns = df.columns.str.strip()
     return df
 
 
-def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=30):
+@st.cache_data
+def load_gmt(gmt_file):
+    """Charge un fichier GMT et retourne un dict pathway_name -> set(genes)."""
+    pathways = {}
+    content = gmt_file.read().decode("utf-8") if hasattr(gmt_file, 'read') else open(gmt_file).read()
+    for line in content.strip().split("\n"):
+        parts = line.strip().split("\t")
+        if len(parts) >= 3:
+            pathways[parts[0]] = set(parts[2:])
+    return pathways
+
+
+def get_relevant_pathways(pathways, panel_genes, min_genes=2):
+    """Filtre les pathways qui contiennent au moins min_genes gènes du panel."""
+    return {k: v & panel_genes for k, v in pathways.items() if len(v & panel_genes) >= min_genes}
+
+# ─────────────────────────────────────────────
+# CO-OCCURRENCE / CO-EXCLUSION
+# ─────────────────────────────────────────────
+def compute_cooccurrence_matrix(df, entity_col, patient_col="Pseudo", min_patients=3):
     """
-    Matrice de features par patient pour clustering.
+    Matrice de co-occurrence entre entités (gènes ou variants).
+    Retourne la matrice binaire patient×entité et les résultats Fisher.
+    """
+    # Matrice binaire patient × entité
+    entities = df.groupby(patient_col)[entity_col].apply(set)
+    all_entities = set()
+    for s in entities: all_entities.update(s)
     
-    Stratégie :
-    - PROPORTIONS (%) au lieu de comptages bruts (neutralise le biais de quantité)
-    - Features BINAIRES pour les gènes (muté oui/non)
-    - SCORE D'IMPACT agrégé par patient (mean, max, somme pondérée)
-    - Pas de features corrélées à la qualité ADN (n_total, depth)
+    # Filtrer les entités présentes chez au moins min_patients
+    entity_counts = df.groupby(entity_col)[patient_col].nunique()
+    freq_entities = entity_counts[entity_counts >= min_patients].index.tolist()
+    
+    patients = entities.index.tolist()
+    binary = pd.DataFrame(0, index=patients, columns=freq_entities)
+    for pat in patients:
+        for ent in entities[pat]:
+            if ent in freq_entities:
+                binary.loc[pat, ent] = 1
+    
+    return binary
+
+
+def compute_pairwise_fisher(binary_matrix, max_pairs=50):
+    """
+    Test de Fisher exact pour chaque paire d'entités.
+    Retourne un DataFrame avec odds_ratio, p_value, type (co-occ / co-excl).
+    """
+    entities = binary_matrix.columns.tolist()
+    n = len(entities)
+    n_patients = len(binary_matrix)
+    
+    results = []
+    for i in range(min(n, max_pairs)):
+        for j in range(i + 1, min(n, max_pairs)):
+            a = binary_matrix.iloc[:, i]
+            b = binary_matrix.iloc[:, j]
+            # Table de contingence 2×2
+            both = int((a & b).sum())
+            a_only = int((a & ~b).sum())
+            b_only = int((~a & b).sum())
+            neither = int((~a & ~b).sum())
+            
+            table = [[both, a_only], [b_only, neither]]
+            try:
+                odds_ratio, p_value = fisher_exact(table)
+            except:
+                odds_ratio, p_value = 1.0, 1.0
+            
+            results.append({
+                "Entity_1": entities[i],
+                "Entity_2": entities[j],
+                "Both": both,
+                "Only_1": a_only,
+                "Only_2": b_only,
+                "Neither": neither,
+                "Odds_Ratio": odds_ratio,
+                "P_value": p_value,
+                "Type": "Co-occurrence" if odds_ratio > 1 else "Co-exclusion",
+                "Freq_1": int(a.sum()),
+                "Freq_2": int(b.sum()),
+            })
+    
+    df_res = pd.DataFrame(results)
+    if len(df_res) > 0:
+        # Correction Bonferroni
+        df_res["P_adjusted"] = df_res["P_value"] * len(df_res)
+        df_res["P_adjusted"] = df_res["P_adjusted"].clip(upper=1.0)
+        df_res = df_res.sort_values("P_value")
+    return df_res
+
+
+# ─────────────────────────────────────────────
+# CLUSTERING FEATURES
+# ─────────────────────────────────────────────
+def build_patient_features(df, use_genomic=True, use_clinical=True, use_pathways=True,
+                           top_n_genes=30, pathways_dict=None):
+    """
+    Matrice patient × features pour clustering.
+    Proportions + scores d'impact + pathways + clinique.
     """
     patients = df["Pseudo"].unique()
     features = {}
@@ -250,31 +265,21 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
         n_total = len(dp)
 
         if use_genomic and n_total > 0:
-            # ── Proportions ACMG (%) ──
             acmg_vc = dp["ACMG_class"].value_counts()
             for cls in ACMG_ORDER:
                 row[f"pct_{cls}"] = (acmg_vc.get(cls, 0) / n_total) * 100
-
-            # ── Proportions par impact (%) ──
             impact_vc = dp["Putative_impact"].value_counts()
             for imp in IMPACT_ORDER:
                 row[f"pct_impact_{imp}"] = (impact_vc.get(imp, 0) / n_total) * 100
-
-            # ── Proportions par type de variant fonctionnel (%) ──
             for eff in ["missensevariant", "frameshiftvariant", "stopgained",
                         "spliceregionvariant", "spliceacceptorvariant", "splicedonorvariant",
                         "disruptiveinframedeletion", "startlost"]:
                 row[f"pct_{eff}"] = (len(dp[dp["Variant_effect"] == eff]) / n_total) * 100
-
-            # ── Score d'impact agrégé ──
             scores = dp["impact_score"]
             row["impact_score_mean"] = scores.mean()
             row["impact_score_max"] = scores.max()
             row["impact_score_p75"] = scores.quantile(0.75)
-            # Nb de variants à haut impact (score >= 6)
             row["pct_high_impact_score"] = (len(scores[scores >= 6]) / n_total) * 100
-
-            # ── Métriques continues ──
             row["median_CADD"] = dp["CADD_phred"].median() if dp["CADD_phred"].notna().any() else 0
             row["median_AR"] = dp["Allelic_ratio"].median()
             row["mean_gnomAD_AF"] = dp["gnomad_exomes_NFE_AF"].mean() if dp["gnomad_exomes_NFE_AF"].notna().any() else 0
@@ -284,22 +289,36 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
 
     df_feat = pd.DataFrame.from_dict(features, orient="index")
 
-    # ── Gènes : features BINAIRES (muté oui/non) ──
-    # On pondère par le max impact_score du gène chez ce patient
+    # Gènes binaires + score max
     if use_genomic:
         top_genes = df["Gene_symbol"].value_counts().head(top_n_genes).index.tolist()
         for gene in top_genes:
             gene_data = df[df["Gene_symbol"] == gene]
-            # Binaire : le patient a-t-il une mutation fonctionnelle dans ce gène ?
             carriers = gene_data["Pseudo"].unique()
             df_feat[f"gene_{gene}"] = df_feat.index.isin(carriers).astype(int)
-            
-            # Score max du gène chez chaque patient (0 si pas muté)
-            gene_max_scores = gene_data.groupby("Pseudo")["impact_score"].max()
-            df_feat[f"genescore_{gene}"] = df_feat.index.map(
-                lambda p, gms=gene_max_scores: gms.get(p, 0)
-            )
+            gene_max = gene_data.groupby("Pseudo")["impact_score"].max()
+            df_feat[f"genescore_{gene}"] = df_feat.index.map(lambda p, g=gene_max: g.get(p, 0))
 
+    # Pathways
+    if use_pathways and pathways_dict:
+        panel_genes = set(df["Gene_symbol"].unique())
+        relevant = get_relevant_pathways(pathways_dict, panel_genes, min_genes=3)
+        # Garder les top pathways les plus pertinents (par nb de gènes du panel)
+        top_pw = sorted(relevant.items(), key=lambda x: len(x[1]), reverse=True)[:50]
+        
+        for pw_name, pw_genes in top_pw:
+            pw_key = pw_name[:40]  # Tronquer les noms longs
+            for pseudo in patients:
+                dp = df[df["Pseudo"] == pseudo]
+                patient_genes = set(dp["Gene_symbol"].unique())
+                mutated_in_pw = patient_genes & pw_genes
+                # Proportion du pathway touchée
+                df_feat.loc[pseudo, f"pw_pct_{pw_key}"] = (len(mutated_in_pw) / len(pw_genes)) * 100
+                # Score d'impact max dans ce pathway
+                pw_variants = dp[dp["Gene_symbol"].isin(pw_genes)]
+                df_feat.loc[pseudo, f"pw_score_{pw_key}"] = pw_variants["impact_score"].max() if len(pw_variants) > 0 else 0
+
+    # Clinique
     if use_clinical:
         avail = [c for c in CLINICAL_COLS if c in df.columns]
         for pseudo in patients:
@@ -313,7 +332,7 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
                         df_feat.loc[pseudo, "Histo_mixed"] = 1 if val == "mixed" else 0
                     else:
                         try: df_feat.loc[pseudo, col] = float(val)
-                        except (ValueError, TypeError): df_feat.loc[pseudo, col] = 0
+                        except: df_feat.loc[pseudo, col] = 0
                 else:
                     if col == "Histo UCD":
                         df_feat.loc[pseudo, "Histo_HV"] = 0
@@ -325,156 +344,80 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
 
 
 def compute_cluster_interpretation(df_feat, labels, key_features, top_n=5):
-    """
-    Interprétation statistique : pour chaque cluster, identifie les features
-    les plus discriminantes par rapport à la moyenne globale (z-score).
-    """
     df_fc = df_feat.copy()
     df_fc["Cluster"] = labels
-
     global_mean = df_feat[key_features].mean()
-    global_std = df_feat[key_features].std().replace(0, 1)  # évite division par 0
-
+    global_std = df_feat[key_features].std().replace(0, 1)
     interpretations = {}
-    for cluster_id in sorted(df_fc["Cluster"].unique()):
-        cluster_data = df_fc[df_fc["Cluster"] == cluster_id]
-        cluster_mean = cluster_data[key_features].mean()
-
-        # Z-scores par rapport à la moyenne globale
-        z_scores = (cluster_mean - global_mean) / global_std
-
-        # Top features enrichies (z > 0) et appauvries (z < 0)
-        z_sorted = z_scores.sort_values()
-        top_up = z_sorted.tail(top_n).iloc[::-1]  # plus enrichies
-        top_down = z_sorted.head(top_n)            # plus appauvries
-
-        # Caractéristiques marquantes (|z| > 0.5)
-        significant = z_scores[z_scores.abs() > 0.5].sort_values(ascending=False)
-
-        interpretations[cluster_id] = {
-            "n_patients": len(cluster_data),
-            "patients": list(cluster_data.index),
-            "top_up": top_up,
-            "top_down": top_down,
-            "significant": significant,
-            "cluster_mean": cluster_mean,
-            "global_mean": global_mean,
+    for cid in sorted(df_fc["Cluster"].unique()):
+        cd = df_fc[df_fc["Cluster"] == cid]
+        cm = cd[key_features].mean()
+        z = (cm - global_mean) / global_std
+        sig = z[z.abs() > 0.5].sort_values(ascending=False)
+        interpretations[cid] = {
+            "n_patients": len(cd), "patients": list(cd.index),
+            "significant": sig, "cluster_mean": cm, "global_mean": global_mean,
         }
-
     return interpretations
 
 
 def get_gene_signature_per_cluster(df, labels_map):
-    """Identifie les gènes les plus spécifiques à chaque cluster."""
     signatures = {}
-    for cluster_id, patients in labels_map.items():
+    for cid, patients in labels_map.items():
         df_cl = df[df["Pseudo"].isin(patients)]
         df_rest = df[~df["Pseudo"].isin(patients)]
-
-        # Fréquence du gène dans le cluster vs hors cluster
-        gene_freq_cl = df_cl.groupby("Gene_symbol")["Pseudo"].nunique() / len(patients)
-        gene_freq_rest = df_rest.groupby("Gene_symbol")["Pseudo"].nunique() / max(1, df_rest["Pseudo"].nunique())
-
-        # Ratio d'enrichissement
-        enrichment = (gene_freq_cl / gene_freq_rest.reindex(gene_freq_cl.index).fillna(0.01)).sort_values(ascending=False)
-        # Ne garder que les gènes présents chez >30% du cluster
-        enrichment = enrichment[gene_freq_cl > 0.3]
-
-        # Top gènes pathogènes dans le cluster
+        gf_cl = df_cl.groupby("Gene_symbol")["Pseudo"].nunique() / max(1, len(patients))
+        gf_rest = df_rest.groupby("Gene_symbol")["Pseudo"].nunique() / max(1, df_rest["Pseudo"].nunique())
+        enrichment = (gf_cl / gf_rest.reindex(gf_cl.index).fillna(0.01)).sort_values(ascending=False)
+        enrichment = enrichment[gf_cl > 0.3]
         patho_genes = df_cl[df_cl["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]["Gene_symbol"].value_counts()
-
-        signatures[cluster_id] = {
-            "enriched_genes": enrichment.head(10),
-            "pathogenic_genes": patho_genes.head(10),
-        }
+        signatures[cid] = {"enriched_genes": enrichment.head(10), "pathogenic_genes": patho_genes.head(10)}
     return signatures
 
 
 def build_ai_prompt(interpretations, gene_signatures, n_clusters):
-    """Construit le prompt pour l'interprétation par IA."""
-    prompt = """Tu es un expert en génétique clinique et en bioinformatique spécialisé dans 
-l'analyse de variants génomiques somatiques issus de séquençage ciblé (panel de gènes). 
-Le contexte est celui de l'étude de tissus FFPE (thymomes / pathologies thymiques liées aux 
-maladies auto-immunes : myasthénie, polyneuropathie, bronchiolite oblitérante, etc.).
+    prompt = """Tu es un expert en génétique clinique spécialisé dans les variants somatiques 
+issus de séquençage ciblé FFPE (thymomes / pathologies thymiques / maladies auto-immunes).
 
-Un clustering non supervisé a été réalisé sur les profils génomiques et cliniques des patients.
-
-MÉTHODOLOGIE IMPORTANTE :
-- Les variants ont été filtrés par qualité avant le clustering (profondeur, ratio allélique, 
-  fréquence gnomAD) pour éliminer les artéfacts FFPE et les polymorphismes fréquents.
-- Les features génomiques utilisent des PROPORTIONS (%) et non des comptages bruts, 
-  afin de ne pas biaiser le clustering par la qualité de l'ADN ou le nombre total de variants.
-- Les features de gènes sont binaires (gène muté oui/non dans le patient).
-
-Voici les résultats détaillés pour chaque cluster. Analyse-les et fournis une interprétation 
-clinico-génomique structurée.
+Méthodologie : variants filtrés par qualité (profondeur, AR, gnomAD NFE), exclusion des 
+synonymes/introniques/UTR. Features en proportions (%) + scores d'impact composites + 
+analyse de pathways (MSigDB). Gènes en features binaires.
 
 """
-    for cluster_id, interp in interpretations.items():
-        prompt += f"\n{'='*60}\n"
-        prompt += f"## {cluster_id} ({interp['n_patients']} patients)\n"
-        prompt += f"Patients : {', '.join(interp['patients'])}\n\n"
-
-        prompt += "### Features significativement enrichies (z-score > 0.5) :\n"
-        for feat, z in interp['significant'].items():
+    for cid, interp in interpretations.items():
+        prompt += f"\n{'='*50}\n## {cid} ({interp['n_patients']} patients: {', '.join(interp['patients'])})\n"
+        prompt += "### Enrichi:\n"
+        for f, z in interp['significant'].items():
             if z > 0:
-                label = FEATURE_LABELS.get(feat, feat)
-                mean_val = interp['cluster_mean'][feat]
-                glob_val = interp['global_mean'][feat]
-                prompt += f"  - {label}: {mean_val:.2f} (moyenne globale: {glob_val:.2f}, z={z:.2f})\n"
-
-        prompt += "\n### Features significativement réduites :\n"
-        for feat, z in interp['significant'].items():
+                label = FEATURE_LABELS.get(f, f)
+                prompt += f"  - {label}: {interp['cluster_mean'][f]:.2f} (glob: {interp['global_mean'][f]:.2f}, z={z:.2f})\n"
+        prompt += "### Réduit:\n"
+        for f, z in interp['significant'].items():
             if z < 0:
-                label = FEATURE_LABELS.get(feat, feat)
-                mean_val = interp['cluster_mean'][feat]
-                glob_val = interp['global_mean'][feat]
-                prompt += f"  - {label}: {mean_val:.2f} (moyenne globale: {glob_val:.2f}, z={z:.2f})\n"
-
-        if cluster_id in gene_signatures:
-            gs = gene_signatures[cluster_id]
+                label = FEATURE_LABELS.get(f, f)
+                prompt += f"  - {label}: {interp['cluster_mean'][f]:.2f} (glob: {interp['global_mean'][f]:.2f}, z={z:.2f})\n"
+        if cid in gene_signatures:
+            gs = gene_signatures[cid]
             if len(gs["pathogenic_genes"]) > 0:
-                prompt += "\n### Gènes avec variants pathogènes dans ce cluster :\n"
-                for gene, count in gs["pathogenic_genes"].head(5).items():
-                    prompt += f"  - {gene}: {count} variants pathogènes\n"
-
+                prompt += "### Gènes pathogènes:\n"
+                for g, c in gs["pathogenic_genes"].head(5).items(): prompt += f"  - {g}: {c}\n"
             if len(gs["enriched_genes"]) > 0:
-                prompt += "\n### Gènes enrichis dans ce cluster (vs autres) :\n"
-                for gene, ratio in gs["enriched_genes"].head(5).items():
-                    prompt += f"  - {gene}: enrichissement x{ratio:.1f}\n"
+                prompt += "### Gènes enrichis:\n"
+                for g, r in gs["enriched_genes"].head(5).items(): prompt += f"  - {g}: x{r:.1f}\n"
 
     prompt += f"""
-
-{'='*60}
-## Instructions pour ton analyse :
-
-Pour chaque cluster, fournis :
-
-1. **Signature dominante** : Quel est le profil génomique et clinique principal de ce groupe ?
-2. **Interprétation clinique** : Quelles implications cliniques peut-on déduire ? 
-   Lien avec la pathologie thymique, les complications auto-immunes ?
-3. **Gènes d'intérêt** : Les gènes enrichis ou porteurs de variants pathogènes ont-ils 
-   un rôle connu dans les thymomes ou les maladies auto-immunes ?
-4. **Comparaison inter-clusters** : Qu'est-ce qui distingue fondamentalement ces groupes ?
-
-Termine par une **synthèse globale** qui résume les axes de stratification des patients 
-et les pistes cliniques/biologiques à explorer.
-
-Réponds en français. Sois précis et cliniquement pertinent.
-"""
+{'='*50}
+Pour chaque cluster: 1) Signature dominante 2) Interprétation clinique (thymome, auto-immunité)
+3) Gènes/pathways d'intérêt 4) Comparaison inter-clusters. Termine par une synthèse globale.
+Réponds en français, sois précis et cliniquement pertinent."""
     return prompt
 
 
 def call_anthropic_api(prompt, api_key):
-    """Appelle l'API Anthropic pour obtenir une interprétation IA."""
     client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
-
+    msg = client.messages.create(model="claude-sonnet-4-20250514", max_tokens=4000,
+                                  messages=[{"role": "user", "content": prompt}])
+    return msg.content[0].text
 
 # ─────────────────────────────────────────────
 # HEADER & CHARGEMENT
@@ -482,30 +425,26 @@ def call_anthropic_api(prompt, api_key):
 st.markdown('<p class="main-title">🧬 Variant Explorer</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">Exploration interactive de variants génomiques — Séquençage ciblé</p>', unsafe_allow_html=True)
 
-uploaded_file = st.sidebar.file_uploader("📁 Charger fichier variants (.csv)", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("📁 Fichier variants (.csv)", type=["csv"])
+gmt_file = st.sidebar.file_uploader("📁 Pathways (.gmt)", type=["gmt"],
+    help="Fichier GMT (MSigDB). Optionnel, enrichit le clustering avec les pathways.")
 
-# API Key dans la sidebar
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🤖 Interprétation IA")
-api_key = st.sidebar.text_input(
-    "Clé API Anthropic",
-    type="password",
-    help="Optionnel. Permet une interprétation narrative des clusters par Claude. "
-         "Obtenez une clé sur console.anthropic.com",
-)
+st.sidebar.markdown("### 🤖 IA")
+api_key = st.sidebar.text_input("Clé API Anthropic", type="password",
+    help="Optionnel. Pour l'interprétation IA des clusters.")
 
 if uploaded_file is None:
-    st.info("👈 **Chargez votre fichier CSV** via la barre latérale pour commencer.")
-    st.stop()
+    st.info("👈 **Chargez votre fichier CSV** via la barre latérale."); st.stop()
 
 df = load_data(uploaded_file)
+pathways_dict = load_gmt(gmt_file) if gmt_file else None
 
 # ─────────────────────────────────────────────
 # FILTRES
 # ─────────────────────────────────────────────
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🔬 Filtres globaux")
-
 sel_patients = st.sidebar.multiselect("Patients", sorted(df["Pseudo"].unique()), placeholder="Tous")
 sel_genes = st.sidebar.multiselect("Gènes", sorted(df["Gene_symbol"].unique()), placeholder="Tous")
 sel_impacts = st.sidebar.multiselect("Impact", IMPACT_ORDER, placeholder="Tous")
@@ -530,8 +469,9 @@ df_f = df_f[
 # ─────────────────────────────────────────────
 # ONGLETS
 # ─────────────────────────────────────────────
-tab_ov, tab_var, tab_pat, tab_gene, tab_acmg, tab_clust = st.tabs(
-    ["📊 Vue d'ensemble", "🔎 Variants", "👤 Patient", "🧬 Gène", "🏷️ ACMG", "🔬 Clustering"]
+tab_ov, tab_var, tab_pat, tab_gene, tab_acmg, tab_coocc, tab_clust = st.tabs(
+    ["📊 Vue d'ensemble", "🔎 Variants", "👤 Patient", "🧬 Gène", "🏷️ ACMG",
+     "🔗 Co-occurrence", "🔬 Clustering"]
 )
 
 # ═══════ VUE D'ENSEMBLE ═══════
@@ -541,10 +481,10 @@ with tab_ov:
     c1.metric("Variants", f"{len(df_f):,}")
     c2.metric("Patients", df_f["Pseudo"].nunique())
     c3.metric("Gènes", df_f["Gene_symbol"].nunique())
-    c4.metric("Pathogènes / LP", len(df_f[df_f["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]))
+    c4.metric("Pathogènes/LP", len(df_f[df_f["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]))
     c5.metric("VUS", len(df_f[df_f["ACMG_class"] == "VUS"]))
-
     st.markdown("---")
+
     cl, cr = st.columns(2)
     with cl:
         ac = df_f["ACMG_class"].value_counts().reindex(ACMG_ORDER).fillna(0)
@@ -554,7 +494,6 @@ with tab_ov:
         fig.update_layout(title="Distribution ACMG", template="plotly_dark",
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=400)
         st.plotly_chart(fig, use_container_width=True)
-
     with cr:
         ic = df_f["Putative_impact"].value_counts().reindex(IMPACT_ORDER).fillna(0)
         fig = go.Figure(go.Bar(x=ic.index, y=ic.values,
@@ -572,7 +511,6 @@ with tab_ov:
         fig.update_layout(title="Top 20 gènes", template="plotly_dark",
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=550, margin=dict(l=120))
         st.plotly_chart(fig, use_container_width=True)
-
     with cr2:
         co = [f"chr{c}" for c in list(range(1, 23)) + ["X", "Y"]]
         cc = df_f["Chromosome"].value_counts().reindex(co).dropna()
@@ -611,17 +549,15 @@ with tab_var:
             "CADD_phred": st.column_config.NumberColumn("CADD", format="%.1f"),
             "gnomad_exomes_NFE_AF": st.column_config.NumberColumn("gnomAD NFE", format="%.5f"),
             "Allelic_ratio": st.column_config.ProgressColumn("AR", min_value=0, max_value=1, format="%.2f"),
-            "impact_score": st.column_config.NumberColumn("Impact Score", format="%.1f"),
+            "impact_score": st.column_config.NumberColumn("Impact", format="%.1f"),
         })
-    st.download_button("📥 Télécharger (CSV)", dv[sc].to_csv(index=False, sep=";"),
-                       "variants_filtered.csv", "text/csv")
+    st.download_button("📥 CSV", dv[sc].to_csv(index=False, sep=";"), "variants_filtered.csv", "text/csv")
 
 # ═══════ PATIENT ═══════
 with tab_pat:
     st.markdown("## 👤 Vue par patient")
     pat = st.selectbox("Patient", sorted(df_f["Pseudo"].unique()))
     dp = df_f[df_f["Pseudo"] == pat]
-
     st.markdown("### Données cliniques")
     ac_clin = [c for c in CLINICAL_COLS if c in dp.columns]
     cr_row = dp[ac_clin].dropna(how="all").head(1)
@@ -629,11 +565,9 @@ with tab_pat:
         cols = st.columns(len(ac_clin))
         for i, cn in enumerate(ac_clin):
             v = cr_row[cn].values[0]; cols[i].metric(cn, str(v) if pd.notna(v) else "—")
-
     st.markdown("---")
     p1, p2, p3, p4 = st.columns(4)
-    p1.metric("Variants", len(dp))
-    p2.metric("Gènes", dp["Gene_symbol"].nunique())
+    p1.metric("Variants", len(dp)); p2.metric("Gènes", dp["Gene_symbol"].nunique())
     p3.metric("Pathogènes/LP", len(dp[dp["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]))
     p4.metric("VUS", len(dp[dp["ACMG_class"] == "VUS"]))
 
@@ -648,11 +582,11 @@ with tab_pat:
     with cr:
         pe = dp["Variant_effect"].value_counts().head(10)
         fig = go.Figure(go.Bar(y=pe.index[::-1], x=pe.values[::-1], orientation="h", marker_color="#64ffda"))
-        fig.update_layout(title=f"Variant types — {pat}", template="plotly_dark",
+        fig.update_layout(title=f"Types — {pat}", template="plotly_dark",
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=400, margin=dict(l=200))
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### ⚠️ Pathogènes & Likely Pathogenic")
+    st.markdown("### ⚠️ Pathogènes & LP")
     dp_p = dp[dp["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]
     if len(dp_p) > 0:
         pc = ["Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "ACMG_class",
@@ -660,7 +594,6 @@ with tab_pat:
         st.dataframe(dp_p[[c for c in pc if c in dp_p.columns]].reset_index(drop=True), use_container_width=True)
     else:
         st.success("Aucun variant pathogène / LP.")
-
     st.markdown("### Tous les variants")
     ac = ["Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "Putative_impact",
           "ACMG_class", "CADD_phred", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
@@ -672,13 +605,11 @@ with tab_gene:
     st.markdown("## 🧬 Vue par gène")
     gene = st.selectbox("Gène", sorted(df_f["Gene_symbol"].unique()))
     dg = df_f[df_f["Gene_symbol"] == gene]
-
     g1, g2, g3, g4 = st.columns(4)
     g1.metric("Variants", len(dg)); g2.metric("Patients", dg["Pseudo"].nunique())
     g3.metric("Uniques", dg["Variant"].nunique())
     mz = dg["mis_z"].iloc[0] if len(dg) > 0 and pd.notna(dg["mis_z"].iloc[0]) else None
     g4.metric("mis_z", f"{mz:.2f}" if mz else "N/A")
-
     cl, cr = st.columns(2)
     with cl:
         gs = dg.dropna(subset=["Position", "Allelic_ratio"])
@@ -697,7 +628,6 @@ with tab_gene:
         fig.update_layout(title=f"{gene} — patients", template="plotly_dark",
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=450, margin=dict(l=100))
         st.plotly_chart(fig, use_container_width=True)
-
     gc = ["Pseudo", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "Putative_impact",
           "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
     st.dataframe(dg[[c for c in gc if c in dg.columns]].reset_index(drop=True),
@@ -706,9 +636,7 @@ with tab_gene:
 # ═══════ ACMG ═══════
 with tab_acmg:
     st.markdown("## 🏷️ Classification ACMG")
-    st.markdown("> ⚠️ Classification **automatique** (ClinVar + CADD + gnomAD). Ne remplace pas une revue manuelle.")
-
-    st.markdown("### Heatmap ACMG × Patients")
+    st.markdown("> ⚠️ Classification **automatique**. Ne remplace pas une revue manuelle.")
     hm = pd.crosstab(df_f["Pseudo"], df_f["ACMG_class"]).reindex(columns=ACMG_ORDER, fill_value=0)
     fig = px.imshow(hm, color_continuous_scale=["#0a192f", "#64ffda"],
         labels=dict(x="ACMG", y="Patient", color="N"), aspect="auto")
@@ -716,23 +644,14 @@ with tab_acmg:
         paper_bgcolor="rgba(0,0,0,0)", height=max(400, len(hm)*18), margin=dict(l=100))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 🔴 Pathogènes & Likely Pathogenic")
     dp_all = df_f[df_f["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]
     if len(dp_all) > 0:
-        st.markdown(f"**{len(dp_all)} variants**")
+        st.markdown(f"### 🔴 {len(dp_all)} variants Pathogènes & LP")
         pc = ["Pseudo", "Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect",
               "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth"]
         st.dataframe(dp_all[[c for c in pc if c in dp_all.columns]].reset_index(drop=True),
                      use_container_width=True, height=500)
 
-        pgc = dp_all["Gene_symbol"].value_counts().head(15)
-        fig = go.Figure(go.Bar(x=pgc.index, y=pgc.values, marker_color="#ff6b6b",
-            text=pgc.values, textposition="outside"))
-        fig.update_layout(title="Gènes les plus souvent pathogènes", template="plotly_dark",
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=400)
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("### Profil ACMG par patient (%)")
     hm_pct = hm.div(hm.sum(axis=1), axis=0) * 100
     fig = go.Figure()
     for cls in ACMG_ORDER:
@@ -741,94 +660,228 @@ with tab_acmg:
                 orientation="h", marker_color=ACMG_COLORS[cls]))
     fig.update_layout(barmode="stack", template="plotly_dark",
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        height=max(400, len(hm_pct)*22), xaxis_title="% variants", margin=dict(l=100))
+        height=max(400, len(hm_pct)*22), xaxis_title="% variants", margin=dict(l=100),
+        title="Profil ACMG par patient (%)")
     st.plotly_chart(fig, use_container_width=True)
 
+# ═══════════════════════════════════════════════════════
+# CO-OCCURRENCE / CO-EXCLUSION
+# ═══════════════════════════════════════════════════════
+with tab_coocc:
+    st.markdown("## 🔗 Co-occurrence & Co-exclusion")
+    st.markdown(
+        "Analyse des associations entre mutations : quels **gènes** ou **variants** "
+        "tendent à être mutés ensemble (co-occurrence) ou à s'exclure mutuellement ?"
+    )
+
+    coocc_level = st.radio("Niveau d'analyse", ["Par gène", "Par variant"],
+        horizontal=True, help="Gène : un patient porte-t-il une mutation dans le gène ? "
+                              "Variant : un patient porte-t-il exactement ce variant ?")
+
+    st.markdown("### Filtres")
+    cc1, cc2, cc3 = st.columns(3)
+    with cc1:
+        coocc_depth = st.number_input("Profondeur min", value=100, step=50, key="coocc_d")
+    with cc2:
+        coocc_ar = st.number_input("AR min", value=0.05, step=0.01, format="%.2f", key="coocc_ar")
+    with cc3:
+        coocc_min_pat = st.number_input("Fréquence min (patients)", value=3, min_value=2, step=1,
+            help="L'entité doit être présente chez au moins N patients pour être analysée.")
+
+    coocc_exclude_benign = st.checkbox("Exclure Benign / Likely Benign", value=True, key="coocc_ben")
+    coocc_exclude_nonfunc = st.checkbox("Exclure variants non fonctionnels", value=True, key="coocc_nf")
+
+    # Filtrage
+    df_coocc = df_f[(df_f["Depth"] >= coocc_depth) & (df_f["Allelic_ratio"] >= coocc_ar)].copy()
+    if coocc_exclude_benign:
+        df_coocc = df_coocc[~df_coocc["ACMG_class"].isin(["Benign", "Likely Benign"])]
+    if coocc_exclude_nonfunc:
+        df_coocc = df_coocc[~df_coocc["Variant_effect"].isin(NON_FUNCTIONAL_EFFECTS)]
+
+    entity_col = "Gene_symbol" if coocc_level == "Par gène" else "Variant"
+
+    st.markdown(f"**{len(df_coocc):,} variants** après filtrage, **{df_coocc[entity_col].nunique()} {coocc_level.lower().replace('par ', '')}s uniques**")
+
+    if len(df_coocc) > 0 and df_coocc["Pseudo"].nunique() >= 3:
+        with st.spinner("Construction de la matrice binaire..."):
+            binary = compute_cooccurrence_matrix(df_coocc, entity_col, min_patients=coocc_min_pat)
+
+        if binary.shape[1] < 2:
+            st.warning("Pas assez d'entités fréquentes. Réduisez le seuil de fréquence min.")
+        else:
+            st.markdown(f"**{binary.shape[1]} entités** analysées (présentes chez ≥{coocc_min_pat} patients)")
+
+            # ── HEATMAP DE CO-OCCURRENCE ──
+            st.markdown("### Matrice de co-occurrence")
+            # Matrice de Jaccard pour la heatmap
+            n_entities = min(binary.shape[1], 40)  # Limiter pour lisibilité
+            top_entities = binary.sum().sort_values(ascending=False).head(n_entities).index
+            binary_top = binary[top_entities]
+
+            coocc_matrix = binary_top.T.dot(binary_top)
+            # Normaliser par Jaccard : |A∩B| / |A∪B|
+            for i in range(len(coocc_matrix)):
+                for j in range(len(coocc_matrix)):
+                    union = (binary_top.iloc[:, i] | binary_top.iloc[:, j]).sum()
+                    coocc_matrix.iloc[i, j] = coocc_matrix.iloc[i, j] / max(union, 1)
+
+            fig = px.imshow(coocc_matrix, color_continuous_scale="YlOrRd",
+                labels=dict(color="Index Jaccard"), aspect="auto")
+            fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                height=max(500, n_entities * 18),
+                margin=dict(l=150, b=150))
+            st.plotly_chart(fig, use_container_width=True)
+
+            # ── TEST DE FISHER ──
+            st.markdown("### Tests de Fisher (paires significatives)")
+            st.markdown(
+                "Test exact de Fisher sur chaque paire : identifie les associations "
+                "statistiquement significatives (p < 0.05 après correction Bonferroni)."
+            )
+
+            max_pairs_fisher = min(binary.shape[1], 60)
+            with st.spinner(f"Tests de Fisher sur {max_pairs_fisher} entités..."):
+                fisher_df = compute_pairwise_fisher(binary[binary.sum().sort_values(ascending=False).head(max_pairs_fisher).index],
+                                                     max_pairs=max_pairs_fisher)
+
+            if len(fisher_df) > 0:
+                # Significatifs
+                sig_fisher = fisher_df[fisher_df["P_adjusted"] < 0.05].copy()
+
+                if len(sig_fisher) > 0:
+                    co_occ = sig_fisher[sig_fisher["Type"] == "Co-occurrence"].head(20)
+                    co_excl = sig_fisher[sig_fisher["Type"] == "Co-exclusion"].head(20)
+
+                    col_o, col_e = st.columns(2)
+
+                    with col_o:
+                        st.markdown("#### 🟢 Co-occurrences significatives")
+                        if len(co_occ) > 0:
+                            display_cols = ["Entity_1", "Entity_2", "Both", "Freq_1", "Freq_2",
+                                           "Odds_Ratio", "P_adjusted"]
+                            st.dataframe(co_occ[display_cols].reset_index(drop=True),
+                                use_container_width=True,
+                                column_config={
+                                    "Odds_Ratio": st.column_config.NumberColumn("OR", format="%.2f"),
+                                    "P_adjusted": st.column_config.NumberColumn("P adj.", format="%.4f"),
+                                })
+                        else:
+                            st.info("Aucune co-occurrence significative.")
+
+                    with col_e:
+                        st.markdown("#### 🔴 Co-exclusions significatives")
+                        if len(co_excl) > 0:
+                            display_cols = ["Entity_1", "Entity_2", "Both", "Freq_1", "Freq_2",
+                                           "Odds_Ratio", "P_adjusted"]
+                            st.dataframe(co_excl[display_cols].reset_index(drop=True),
+                                use_container_width=True,
+                                column_config={
+                                    "Odds_Ratio": st.column_config.NumberColumn("OR", format="%.2f"),
+                                    "P_adjusted": st.column_config.NumberColumn("P adj.", format="%.4f"),
+                                })
+                        else:
+                            st.info("Aucune co-exclusion significative.")
+
+                    # Volcano-like plot
+                    st.markdown("### Volcano plot")
+                    fisher_plot = fisher_df.copy()
+                    fisher_plot["log10_p"] = -np.log10(fisher_plot["P_adjusted"].clip(lower=1e-10))
+                    fisher_plot["log2_OR"] = np.log2(fisher_plot["Odds_Ratio"].clip(lower=0.01, upper=100))
+                    fisher_plot["label"] = fisher_plot["Entity_1"] + " / " + fisher_plot["Entity_2"]
+                    fisher_plot["Significant"] = fisher_plot["P_adjusted"] < 0.05
+
+                    fig = px.scatter(fisher_plot, x="log2_OR", y="log10_p",
+                        color="Significant", color_discrete_map={True: "#ff6b6b", False: "#555"},
+                        hover_data=["Entity_1", "Entity_2", "Both", "Odds_Ratio", "P_adjusted"],
+                        opacity=0.7)
+                    fig.add_vline(x=0, line_dash="dash", line_color="#888", opacity=0.5)
+                    fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="#ffd93d", opacity=0.5,
+                                  annotation_text="p=0.05")
+                    fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)", height=500,
+                        xaxis_title="log2(Odds Ratio) ← Co-exclusion | Co-occurrence →",
+                        yaxis_title="-log10(P ajusté)")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Aucune paire significative après correction Bonferroni. "
+                            "Essayez de réduire le seuil de fréquence minimum.")
+
+            # ── ONCOPRINT SIMPLIFIÉ ──
+            st.markdown("### Oncoprint")
+            st.markdown("Matrice binaire patient × entité (top entités les plus fréquentes).")
+            n_onco = st.slider("Nombre d'entités à afficher", 10, 50, 20, key="onco_n")
+            top_onco = binary.sum().sort_values(ascending=False).head(n_onco).index
+            onco_data = binary[top_onco].T
+
+            fig = px.imshow(onco_data, color_continuous_scale=["#0a192f", "#64ffda"],
+                labels=dict(x="Patient", y=coocc_level.replace("Par ", ""), color="Muté"),
+                aspect="auto")
+            fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)", height=max(400, n_onco * 20),
+                margin=dict(l=180, b=100), xaxis_tickangle=-90)
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("Pas assez de données après filtrage.")
 
 # ═══════════════════════════════════════════════════════
-# CLUSTERING + INTERPRÉTATION
+# CLUSTERING + PATHWAYS + INTERPRÉTATION
 # ═══════════════════════════════════════════════════════
 with tab_clust:
     st.markdown("## 🔬 Clustering des patients")
     st.markdown(
-        "Identification de groupes de patients partageant des **signatures génomiques et/ou cliniques** "
-        "similaires via **UMAP** + clustering, avec interprétation statistique et IA."
+        "Signatures **génomiques**, **cliniques** et **pathways** combinées. "
+        "UMAP + clustering, interprétation statistique et IA."
     )
 
     if df_f["Pseudo"].nunique() < 5:
         st.warning("Au moins 5 patients nécessaires."); st.stop()
 
-    # ── FILTRES QUALITÉ PRÉ-CLUSTERING ──
+    # ── FILTRES QUALITÉ ──
     st.markdown("### 🧹 Filtres qualité (pré-clustering)")
-    st.markdown(
-        "> Ces filtres s'appliquent **uniquement au clustering** pour ne conserver que les variants "
-        "fiables et informatifs. En FFPE, la qualité de l'ADN varie entre échantillons : "
-        "sans filtrage, le clustering regrouperait les patients par qualité d'ADN plutôt que par biologie."
-    )
-
     qc1, qc2, qc3, qc4 = st.columns(4)
     with qc1:
-        cl_depth_min = st.number_input("Profondeur min", min_value=0, value=100, step=50,
-            key="cl_depth", help="Exclut les variants à faible couverture (artéfacts FFPE)")
+        cl_depth = st.number_input("Profondeur min", value=100, step=50, key="cld")
     with qc2:
-        cl_ar_min = st.number_input("Ratio allélique min", min_value=0.0, value=0.05, step=0.01,
-            format="%.2f", key="cl_ar", help="Exclut le bruit de fond (AR très bas)")
+        cl_ar = st.number_input("AR min", value=0.05, step=0.01, format="%.2f", key="cla")
     with qc3:
-        cl_af_max = st.number_input("gnomAD NFE AF max", min_value=0.0, value=0.01, step=0.005,
-            format="%.3f", key="cl_af", help="Exclut les polymorphismes fréquents en population européenne")
+        cl_af = st.number_input("gnomAD NFE max", value=0.01, step=0.005, format="%.3f", key="clf")
     with qc4:
-        cl_exclude_benign = st.checkbox("Exclure Benign / Likely Benign", value=True,
-            help="Focus sur les variants potentiellement pathogènes")
+        cl_excl_ben = st.checkbox("Exclure Benign/LB", value=True, key="clb")
 
-    # Filtrage des effets non fonctionnels
-    st.markdown("**Exclusion des variants non fonctionnels**")
-    excluded_effects = st.multiselect(
-        "Types de variants à exclure",
-        sorted(NON_FUNCTIONAL_EFFECTS),
-        default=sorted(NON_FUNCTIONAL_EFFECTS),
-        help="Les variants synonymes, introniques, UTR, etc. n'ont en général pas d'impact "
-             "fonctionnel et ajoutent du bruit au clustering.",
-    )
+    excluded_effects = st.multiselect("Types à exclure", sorted(NON_FUNCTIONAL_EFFECTS),
+        default=sorted(NON_FUNCTIONAL_EFFECTS), key="cl_eff")
 
-    # Appliquer les filtres qualité
     df_clust = df_f[
-        (df_f["Depth"] >= cl_depth_min) &
-        (df_f["Allelic_ratio"] >= cl_ar_min) &
-        (df_f["gnomad_exomes_NFE_AF"].fillna(0) <= cl_af_max) &
+        (df_f["Depth"] >= cl_depth) & (df_f["Allelic_ratio"] >= cl_ar) &
+        (df_f["gnomad_exomes_NFE_AF"].fillna(0) <= cl_af) &
         (~df_f["Variant_effect"].isin(excluded_effects))
     ].copy()
-
-    if cl_exclude_benign:
+    if cl_excl_ben:
         df_clust = df_clust[~df_clust["ACMG_class"].isin(["Benign", "Likely Benign"])]
 
-    # Métriques post-filtre
-    n_before = len(df_f)
-    n_after = len(df_clust)
-    n_patients_after = df_clust["Pseudo"].nunique()
+    n_before, n_after = len(df_f), len(df_clust)
+    n_pat_after = df_clust["Pseudo"].nunique()
 
     qm1, qm2, qm3, qm4 = st.columns(4)
-    qm1.metric("Variants avant filtre", f"{n_before:,}")
-    qm2.metric("Variants après filtre", f"{n_after:,}")
+    qm1.metric("Avant filtre", f"{n_before:,}")
+    qm2.metric("Après filtre", f"{n_after:,}")
     qm3.metric("% conservés", f"{n_after/max(n_before,1)*100:.1f}%")
-    qm4.metric("Patients conservés", n_patients_after)
+    qm4.metric("Patients", n_pat_after)
 
-    if n_patients_after < 5:
-        st.error("Moins de 5 patients après filtrage. Assouplissez les filtres qualité.")
-        st.stop()
-    if n_after < 50:
-        st.warning("Très peu de variants conservés. Les résultats pourraient être instables.")
+    if n_pat_after < 5:
+        st.error("< 5 patients après filtrage."); st.stop()
 
+    # ── PARAMÈTRES CLUSTERING ──
     st.markdown("---")
-    st.markdown("### ⚙️ Paramètres du clustering")
-    st.markdown(
-        "> Le clustering utilise des **proportions** (%), des **scores d'impact composites** "
-        "(combinant CADD, rareté, ClinVar et impact fonctionnel), et des **features binaires** "
-        "par gène. Les variants non fonctionnels (synonymes, introniques, UTR) sont exclus."
-    )
-    cp1, cp2, cp3 = st.columns(3)
-    with cp1: use_gen = st.checkbox("Features génomiques", True)
-    with cp2: use_clin = st.checkbox("Features cliniques", True)
-    with cp3: top_n = st.slider("Top N gènes", 10, 50, 30, 5)
+    st.markdown("### ⚙️ Paramètres")
+    cp1, cp2, cp3, cp4 = st.columns(4)
+    with cp1: use_gen = st.checkbox("Génomique", True)
+    with cp2: use_clin = st.checkbox("Clinique", True)
+    with cp3: use_pw = st.checkbox("Pathways", value=pathways_dict is not None,
+        disabled=pathways_dict is None,
+        help="Nécessite un fichier GMT chargé dans la sidebar.")
+    with cp4: top_n = st.slider("Top N gènes", 10, 50, 30, 5)
 
     cc1, cc2 = st.columns(2)
     with cc1: method = st.selectbox("Méthode", ["Hiérarchique (Ward)", "K-Means"])
@@ -838,13 +891,28 @@ with tab_clust:
     with cu1: n_neigh = st.slider("UMAP n_neighbors", 3, 30, 10)
     with cu2: m_dist = st.slider("UMAP min_dist", 0.0, 1.0, 0.3, 0.05)
 
-    if not use_gen and not use_clin:
+    if not use_gen and not use_clin and not use_pw:
         st.warning("Sélectionnez au moins un type de features."); st.stop()
 
-    with st.spinner("Construction matrice de features (proportions + binaire)..."):
-        df_feat = build_patient_features(df_clust, use_gen, use_clin, top_n)
+    # ── BUILD & CLUSTER ──
+    with st.spinner("Construction matrice..."):
+        df_feat = build_patient_features(df_clust, use_gen, use_clin,
+            use_pathways=use_pw and pathways_dict is not None,
+            top_n_genes=top_n, pathways_dict=pathways_dict)
 
     st.markdown(f"**{df_feat.shape[0]} patients × {df_feat.shape[1]} features**")
+
+    # Afficher le détail des features
+    with st.expander("📋 Détail des features utilisées"):
+        feat_types = {"Génomique (proportions)": [c for c in df_feat.columns if c.startswith("pct_")],
+                      "Génomique (scores)": [c for c in df_feat.columns if c.startswith("impact_score") or c.startswith("median_") or c.startswith("mean_") or c == "n_unique_genes"],
+                      "Gènes (binaire)": [c for c in df_feat.columns if c.startswith("gene_")],
+                      "Gènes (score impact)": [c for c in df_feat.columns if c.startswith("genescore_")],
+                      "Pathways (%)": [c for c in df_feat.columns if c.startswith("pw_pct_")],
+                      "Pathways (score)": [c for c in df_feat.columns if c.startswith("pw_score_")],
+                      "Clinique": [c for c in df_feat.columns if c in ["Histo_HV", "Histo_mixed"] + CLINICAL_COLS]}
+        for cat, cols in feat_types.items():
+            if cols: st.markdown(f"- **{cat}** : {len(cols)} features")
 
     scaler = StandardScaler()
     X = scaler.fit_transform(df_feat)
@@ -863,39 +931,32 @@ with tab_clust:
         sil = silhouette_score(X, labs) if len(set(labs)) > 1 else 0
 
     cluster_labels = [f"Cluster {l}" for l in labs]
-
-    df_u = pd.DataFrame({
-        "UMAP_1": emb[:, 0], "UMAP_2": emb[:, 1],
-        "Cluster": cluster_labels, "Patient": df_feat.index,
-    })
+    df_u = pd.DataFrame({"UMAP_1": emb[:, 0], "UMAP_2": emb[:, 1],
+        "Cluster": cluster_labels, "Patient": df_feat.index})
     for col in df_feat.columns:
-        if col.startswith("pct_") or col.startswith("median_") or col.startswith("mean_") or col.startswith("impact_score") or col in [
-            "n_unique_genes", "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
-            "Recidive", "BO", "PNP", "MG", "FDSCS"]:
+        if (col.startswith("pct_") or col.startswith("median_") or col.startswith("mean_")
+            or col.startswith("impact_score") or col.startswith("pw_pct_")
+            or col in ["n_unique_genes", "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
+                       "Recidive", "BO", "PNP", "MG", "FDSCS"]):
             df_u[col] = df_feat[col].values
 
     ccols = px.colors.qualitative.Bold[:n_clust]
-
     st.markdown("---")
     m1, m2, m3 = st.columns(3)
-    m1.metric("Clusters", n_clust)
-    m2.metric("Silhouette", f"{sil:.3f}")
-    m3.metric("Features", df_feat.shape[1])
+    m1.metric("Clusters", n_clust); m2.metric("Silhouette", f"{sil:.3f}"); m3.metric("Features", df_feat.shape[1])
 
-    # UMAP
+    # ── UMAP ──
     st.markdown("### Projection UMAP")
     hover_extra = [c for c in ["pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS",
-                               "impact_score_mean", "pct_high_impact_score", "n_unique_genes"]
-                   if c in df_u.columns]
+                               "impact_score_mean", "n_unique_genes"] if c in df_u.columns]
     fig = px.scatter(df_u, x="UMAP_1", y="UMAP_2", color="Cluster", text="Patient",
-        hover_data=["Patient", "Cluster"] + hover_extra,
-        color_discrete_sequence=ccols)
+        hover_data=["Patient", "Cluster"] + hover_extra, color_discrete_sequence=ccols)
     fig.update_traces(textposition="top center", textfont_size=10, marker_size=12)
     fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)", height=600)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Dendrogramme
+    # ── DENDROGRAMME ──
     if method == "Hiérarchique (Ward)":
         st.markdown("### Dendrogramme")
         Z = linkage(X, method="ward")
@@ -905,7 +966,7 @@ with tab_clust:
             paper_bgcolor="rgba(0,0,0,0)", height=400, xaxis_tickangle=-90, margin=dict(b=120))
         st.plotly_chart(fig_d, use_container_width=True)
 
-    # Heatmap profil
+    # ── PROFIL CLUSTERS ──
     st.markdown("### Profil des clusters")
     df_fc = df_feat.copy()
     df_fc["Cluster"] = cluster_labels
@@ -914,38 +975,36 @@ with tab_clust:
         "pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS", "pct_Likely Benign", "pct_Benign",
         "pct_impact_high", "pct_impact_moderate", "pct_impact_low",
         "pct_missensevariant", "pct_frameshiftvariant", "pct_stopgained",
-        "pct_disruptiveinframedeletion", "pct_startlost",
-        "impact_score_mean", "impact_score_max", "impact_score_p75",
-        "pct_high_impact_score",
+        "impact_score_mean", "impact_score_max", "pct_high_impact_score",
         "median_CADD", "median_AR", "mean_gnomAD_AF", "n_unique_genes"]]
     key_clin = [c for c in df_fc.columns if c in [
         "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
         "Recidive", "BO", "PNP", "MG", "FDSCS"]]
-    key_feat = (key_gen if use_gen else []) + (key_clin if use_clin else [])
+    key_pw = [c for c in df_fc.columns if c.startswith("pw_pct_")][:15]  # Top 15 pathways
+    key_feat = (key_gen if use_gen else []) + (key_clin if use_clin else []) + (key_pw if use_pw else [])
 
     if key_feat:
         cp = df_fc.groupby("Cluster")[key_feat].mean().round(2)
         fig = px.imshow(cp.T, color_continuous_scale="YlOrRd", aspect="auto",
-            labels=dict(x="Cluster", y="Feature", color="Moyenne"), text_auto=".2f")
+            labels=dict(x="Cluster", y="Feature", color="Moyenne"), text_auto=".1f")
         fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)", height=max(400, len(key_feat)*25), margin=dict(l=200))
+            paper_bgcolor="rgba(0,0,0,0)", height=max(500, len(key_feat)*22), margin=dict(l=250))
         st.plotly_chart(fig, use_container_width=True)
 
-    # Barplots
+    # ── BARPLOTS ──
     if use_clin and key_clin:
-        st.markdown("### Profil clinique par cluster")
+        st.markdown("### Profil clinique")
         cm = df_fc.groupby("Cluster")[key_clin].mean()
         fig = px.bar(cm.reset_index().melt(id_vars="Cluster"), x="variable", y="value",
-            color="Cluster", barmode="group", color_discrete_sequence=ccols,
-            labels={"variable": "Variable clinique", "value": "Proportion moyenne"})
-        fig.update_layout(title="Profil clinique moyen", template="plotly_dark",
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=450)
+            color="Cluster", barmode="group", color_discrete_sequence=ccols)
+        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)", height=450, title="Profil clinique moyen")
         st.plotly_chart(fig, use_container_width=True)
 
     if use_gen:
-        st.markdown("### Profil ACMG par cluster")
         acmg_c = [f"pct_{c}" for c in ACMG_ORDER if f"pct_{c}" in df_fc.columns]
         if acmg_c:
+            st.markdown("### Profil ACMG")
             am = df_fc.groupby("Cluster")[acmg_c].mean()
             am.columns = [c.replace("pct_", "") for c in am.columns]
             fig = go.Figure()
@@ -954,137 +1013,91 @@ with tab_clust:
                     marker_color=ACMG_COLORS.get(cls, "#888")))
             fig.update_layout(barmode="stack", template="plotly_dark",
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=450,
-                title="Répartition ACMG par cluster (%)", yaxis_title="% moyen")
+                title="ACMG par cluster (%)", yaxis_title="% moyen")
             st.plotly_chart(fig, use_container_width=True)
 
-    # ─────────────────────────────────────────────────────
-    # INTERPRÉTATION STATISTIQUE
-    # ─────────────────────────────────────────────────────
+    # ── TOP PATHWAYS PAR CLUSTER ──
+    if use_pw and pathways_dict and key_pw:
+        st.markdown("### Top pathways par cluster")
+        pw_means = df_fc.groupby("Cluster")[key_pw].mean()
+        pw_means.columns = [c.replace("pw_pct_", "") for c in pw_means.columns]
+        fig = px.imshow(pw_means.T, color_continuous_scale=["#0a192f", "#ff6b6b"],
+            labels=dict(x="Cluster", y="Pathway", color="% muté"), aspect="auto", text_auto=".1f")
+        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)", height=max(400, len(key_pw)*25), margin=dict(l=280))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── INTERPRÉTATION STATISTIQUE ──
     st.markdown("---")
     st.markdown("## 🧠 Interprétation des clusters")
 
     if key_feat:
         interpretations = compute_cluster_interpretation(df_feat, cluster_labels, key_feat)
-        labels_map = {}
-        for cl_id, interp in interpretations.items():
-            labels_map[cl_id] = interp["patients"]
-
-        gene_signatures = get_gene_signature_per_cluster(df_f, labels_map)
+        labels_map = {cid: interp["patients"] for cid, interp in interpretations.items()}
+        gene_sigs = get_gene_signature_per_cluster(df_clust, labels_map)
 
         st.markdown("### 📊 Interprétation statistique")
-        st.markdown(
-            "Pour chaque cluster, les features sont comparées à la **moyenne globale** via un z-score. "
-            "Les features avec |z| > 0.5 sont considérées comme **discriminantes**."
-        )
-
-        for cluster_id in sorted(interpretations.keys()):
-            interp = interpretations[cluster_id]
-
-            with st.expander(f"🔹 {cluster_id} — {interp['n_patients']} patients ({', '.join(interp['patients'])})", expanded=True):
-
-                # Features discriminantes
+        for cid in sorted(interpretations.keys()):
+            interp = interpretations[cid]
+            with st.expander(f"🔹 {cid} — {interp['n_patients']} patients ({', '.join(interp['patients'])})", expanded=True):
                 sig = interp["significant"]
                 if len(sig) > 0:
                     enriched = sig[sig > 0]
                     depleted = sig[sig < 0]
-
-                    col_e, col_d = st.columns(2)
-
-                    with col_e:
-                        st.markdown("**🔺 Enrichi par rapport à la cohorte**")
-                        for feat, z in enriched.items():
-                            label = FEATURE_LABELS.get(feat, feat)
-                            val = interp["cluster_mean"][feat]
-                            glob = interp["global_mean"][feat]
-                            st.markdown(
-                                f'<span class="feat-up">▲ {label}</span> : '
-                                f'{val:.2f} vs {glob:.2f} (z={z:+.2f})',
-                                unsafe_allow_html=True,
-                            )
-
-                    with col_d:
-                        st.markdown("**🔻 Réduit par rapport à la cohorte**")
-                        for feat, z in depleted.items():
-                            label = FEATURE_LABELS.get(feat, feat)
-                            val = interp["cluster_mean"][feat]
-                            glob = interp["global_mean"][feat]
-                            st.markdown(
-                                f'<span class="feat-down">▼ {label}</span> : '
-                                f'{val:.2f} vs {glob:.2f} (z={z:+.2f})',
-                                unsafe_allow_html=True,
-                            )
+                    ce, cd = st.columns(2)
+                    with ce:
+                        st.markdown("**🔺 Enrichi**")
+                        for f, z in enriched.items():
+                            label = FEATURE_LABELS.get(f, f.replace("pw_pct_", "🔬 ").replace("pct_", "").replace("_", " "))
+                            st.markdown(f'<span class="feat-up">▲ {label}</span> : '
+                                f'{interp["cluster_mean"][f]:.2f} vs {interp["global_mean"][f]:.2f} (z={z:+.2f})',
+                                unsafe_allow_html=True)
+                    with cd:
+                        st.markdown("**🔻 Réduit**")
+                        for f, z in depleted.items():
+                            label = FEATURE_LABELS.get(f, f.replace("pw_pct_", "🔬 ").replace("pct_", "").replace("_", " "))
+                            st.markdown(f'<span class="feat-down">▼ {label}</span> : '
+                                f'{interp["cluster_mean"][f]:.2f} vs {interp["global_mean"][f]:.2f} (z={z:+.2f})',
+                                unsafe_allow_html=True)
                 else:
-                    st.info("Aucune feature significativement discriminante pour ce cluster.")
+                    st.info("Aucune feature significativement discriminante.")
 
-                # Gènes spécifiques
-                if cluster_id in gene_signatures:
-                    gs = gene_signatures[cluster_id]
-                    col_pg, col_eg = st.columns(2)
-                    with col_pg:
+                if cid in gene_sigs:
+                    gs = gene_sigs[cid]
+                    cg, ce2 = st.columns(2)
+                    with cg:
                         if len(gs["pathogenic_genes"]) > 0:
-                            st.markdown("**🧬 Gènes avec variants pathogènes :**")
-                            for gene_name, count in gs["pathogenic_genes"].head(5).items():
-                                st.markdown(f"- **{gene_name}** : {count} variant(s)")
-                    with col_eg:
+                            st.markdown("**🧬 Gènes pathogènes :**")
+                            for g, c in gs["pathogenic_genes"].head(5).items():
+                                st.markdown(f"- **{g}** : {c}")
+                    with ce2:
                         if len(gs["enriched_genes"]) > 0:
-                            st.markdown("**📈 Gènes enrichis (vs autres clusters) :**")
-                            for gene_name, ratio in gs["enriched_genes"].head(5).items():
-                                st.markdown(f"- **{gene_name}** : ×{ratio:.1f}")
+                            st.markdown("**📈 Gènes enrichis :**")
+                            for g, r in gs["enriched_genes"].head(5).items():
+                                st.markdown(f"- **{g}** : ×{r:.1f}")
 
-        # ─────────────────────────────────────────────────────
-        # INTERPRÉTATION IA
-        # ─────────────────────────────────────────────────────
+        # ── INTERPRÉTATION IA ──
         st.markdown("---")
-        st.markdown("### 🤖 Interprétation par Intelligence Artificielle")
-
+        st.markdown("### 🤖 Interprétation IA")
         if not ANTHROPIC_AVAILABLE:
-            st.warning(
-                "Le package `anthropic` n'est pas installé. "
-                "Ajoutez `anthropic` à votre `requirements.txt` pour activer cette fonctionnalité."
-            )
+            st.warning("Package `anthropic` non installé. Ajoutez-le à requirements.txt.")
         elif not api_key:
-            st.info(
-                "💡 Pour obtenir une interprétation narrative par IA, entrez votre **clé API Anthropic** "
-                "dans la barre latérale. L'IA analysera les profils de chaque cluster et fournira "
-                "une interprétation clinico-génomique détaillée.\n\n"
-                "👉 Obtenez une clé sur [console.anthropic.com](https://console.anthropic.com)"
-            )
+            st.info("💡 Entrez votre clé API Anthropic dans la sidebar pour activer l'interprétation IA.")
         else:
             if st.button("🧠 Lancer l'interprétation IA", type="primary", use_container_width=True):
-                with st.spinner("Claude analyse vos clusters... (30-60 secondes)"):
+                with st.spinner("Claude analyse vos clusters..."):
                     try:
-                        prompt = build_ai_prompt(interpretations, gene_signatures, n_clust)
-                        ai_response = call_anthropic_api(prompt, api_key)
-
-                        st.markdown(
-                            f'<div class="ai-interpretation">'
-                            f'<h4>🤖 Analyse par Claude</h4>'
-                            f'{ai_response}'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-
-                        # Stocker en session pour ne pas refaire l'appel
-                        st.session_state["ai_interpretation"] = ai_response
-
-                    except anthropic.AuthenticationError:
-                        st.error("❌ Clé API invalide. Vérifiez votre clé dans la barre latérale.")
-                    except anthropic.RateLimitError:
-                        st.error("⏳ Limite de requêtes atteinte. Réessayez dans quelques instants.")
+                        prompt = build_ai_prompt(interpretations, gene_sigs, n_clust)
+                        ai_resp = call_anthropic_api(prompt, api_key)
+                        st.markdown(f'<div class="ai-interpretation"><h4>🤖 Analyse</h4>{ai_resp}</div>',
+                            unsafe_allow_html=True)
+                        st.session_state["ai_interpretation"] = ai_resp
                     except Exception as e:
-                        st.error(f"Erreur lors de l'appel API : {str(e)}")
-
-            # Afficher l'interprétation précédente si elle existe
+                        st.error(f"Erreur API : {e}")
             elif "ai_interpretation" in st.session_state:
-                st.markdown(
-                    f'<div class="ai-interpretation">'
-                    f'<h4>🤖 Analyse par Claude (précédente)</h4>'
-                    f'{st.session_state["ai_interpretation"]}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f'<div class="ai-interpretation"><h4>🤖 Analyse (précédente)</h4>'
+                    f'{st.session_state["ai_interpretation"]}</div>', unsafe_allow_html=True)
 
-    # Export
     st.markdown("### Export")
     exp = df_u[["Patient", "Cluster", "UMAP_1", "UMAP_2"]].to_csv(index=False, sep=";")
     st.download_button("📥 Clusters (CSV)", exp, "clusters.csv", "text/csv")
@@ -1092,4 +1105,4 @@ with tab_clust:
 # Footer
 st.markdown("---")
 st.markdown('<p style="text-align:center;color:#4a5568;font-size:0.85rem;">'
-    '🧬 Variant Explorer v3.0 — Données locales uniquement</p>', unsafe_allow_html=True)
+    '🧬 Variant Explorer v4.0 — Données locales uniquement</p>', unsafe_allow_html=True)
