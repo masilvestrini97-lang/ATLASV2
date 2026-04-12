@@ -100,6 +100,12 @@ FEATURE_LABELS = {
     "pct_spliceregionvariant": "% Splice Region",
     "pct_spliceacceptorvariant": "% Splice Acceptor",
     "pct_splicedonorvariant": "% Splice Donor",
+    "pct_disruptiveinframedeletion": "% Délétion in-frame disruptive",
+    "pct_startlost": "% Start Lost",
+    "impact_score_mean": "Score d'impact moyen",
+    "impact_score_max": "Score d'impact maximal",
+    "impact_score_p75": "Score d'impact P75",
+    "pct_high_impact_score": "% Variants à haut impact (score≥6)",
     "median_CADD": "Score CADD médian",
     "median_AR": "Ratio allélique médian",
     "mean_gnomAD_AF": "Fréquence gnomAD moyenne",
@@ -145,6 +151,65 @@ def classify_acmg(row):
     return "VUS"
 
 
+# Variant effects considérés comme non-fonctionnels (exclure du clustering)
+NON_FUNCTIONAL_EFFECTS = {
+    "synonymousvariant",
+    "intronvariant",
+    "3primeutrvariant",
+    "5primeutrvariant",
+    "upstreamgenevariant",
+    "downstreamgenevariant",
+    "intragenicvariant",
+    "5primeutrprematurestartcodongainvariant",
+}
+
+
+def compute_variant_impact_score(row):
+    """
+    Score d'impact composite par variant (0-10).
+    
+    Combine 4 dimensions :
+    - Impact fonctionnel prédit : HIGH=4, MODERATE=2, LOW=0.5
+    - Score CADD normalisé (0-2) : délétèrité in silico
+    - Rareté allélique (0-2) : plus rare = plus suspect
+    - ClinVar (0-2) : classification clinique connue
+    """
+    score = 0.0
+    
+    # 1. Impact fonctionnel (0-4)
+    impact = str(row.get("Putative_impact", "")).lower()
+    score += {"high": 4.0, "moderate": 2.0, "low": 0.5, "modifier": 0.0}.get(impact, 0)
+    
+    # 2. CADD normalisé (0-2)
+    cadd = row.get("CADD_phred", None)
+    if pd.notna(cadd):
+        score += min(cadd / 20.0, 2.0)
+    
+    # 3. Rareté allélique (0-2)
+    gnomad = row.get("gnomad_exomes_AF", None)
+    if pd.isna(gnomad) or gnomad == 0:
+        score += 2.0
+    elif gnomad < 0.0001:
+        score += 1.8
+    elif gnomad < 0.001:
+        score += 1.5
+    elif gnomad < 0.01:
+        score += 1.0
+    elif gnomad < 0.05:
+        score += 0.3
+    
+    # 4. ClinVar (0-2)
+    clinvar = str(row.get("Clinvar_significance", "")).lower()
+    clinvar_w = {
+        "pathogenic": 2.0, "pathogeniclikelypathogenic": 2.0,
+        "likelypathogenic": 1.5, "uncertainsignificance": 0.5,
+        "conflictinginterpretationsofpathogenicity": 0.3, "riskfactor": 0.5,
+    }
+    score += clinvar_w.get(clinvar, 0)
+    
+    return round(score, 2)
+
+
 def extract_chrom(v):
     try: return f"chr{str(v).split(':')[0]}"
     except: return "Unknown"
@@ -161,6 +226,7 @@ def load_data(uploaded_file):
     df["Chromosome"] = df["Variant"].apply(extract_chrom)
     df["Position"] = df["Variant"].apply(extract_pos)
     df["ACMG_class"] = df.apply(classify_acmg, axis=1)
+    df["impact_score"] = df.apply(compute_variant_impact_score, axis=1)
     df.columns = df.columns.str.strip()
     return df
 
@@ -169,9 +235,11 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
     """
     Matrice de features par patient pour clustering.
     
-    IMPORTANT : utilise des PROPORTIONS (%) et des features binaires
-    plutôt que des comptages bruts, afin de ne pas biaiser le clustering
-    par la qualité de l'ADN / le nombre total de variants.
+    Stratégie :
+    - PROPORTIONS (%) au lieu de comptages bruts (neutralise le biais de quantité)
+    - Features BINAIRES pour les gènes (muté oui/non)
+    - SCORE D'IMPACT agrégé par patient (mean, max, somme pondérée)
+    - Pas de features corrélées à la qualité ADN (n_total, depth)
     """
     patients = df["Pseudo"].unique()
     features = {}
@@ -192,17 +260,24 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
             for imp in IMPACT_ORDER:
                 row[f"pct_impact_{imp}"] = (impact_vc.get(imp, 0) / n_total) * 100
 
-            # ── Proportions par type de variant clé (%) ──
+            # ── Proportions par type de variant fonctionnel (%) ──
             for eff in ["missensevariant", "frameshiftvariant", "stopgained",
-                        "spliceregionvariant", "spliceacceptorvariant", "splicedonorvariant"]:
+                        "spliceregionvariant", "spliceacceptorvariant", "splicedonorvariant",
+                        "disruptiveinframedeletion", "startlost"]:
                 row[f"pct_{eff}"] = (len(dp[dp["Variant_effect"] == eff]) / n_total) * 100
 
-            # ── Métriques continues (non affectées par le nb de variants) ──
+            # ── Score d'impact agrégé ──
+            scores = dp["impact_score"]
+            row["impact_score_mean"] = scores.mean()
+            row["impact_score_max"] = scores.max()
+            row["impact_score_p75"] = scores.quantile(0.75)
+            # Nb de variants à haut impact (score >= 6)
+            row["pct_high_impact_score"] = (len(scores[scores >= 6]) / n_total) * 100
+
+            # ── Métriques continues ──
             row["median_CADD"] = dp["CADD_phred"].median() if dp["CADD_phred"].notna().any() else 0
             row["median_AR"] = dp["Allelic_ratio"].median()
             row["mean_gnomAD_AF"] = dp["gnomad_exomes_AF"].mean() if dp["gnomad_exomes_AF"].notna().any() else 0
-
-            # ── Diversité génique (nombre de gènes uniques touchés) ──
             row["n_unique_genes"] = dp["Gene_symbol"].nunique()
 
         features[pseudo] = row
@@ -210,11 +285,20 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, top_n_genes=
     df_feat = pd.DataFrame.from_dict(features, orient="index")
 
     # ── Gènes : features BINAIRES (muté oui/non) ──
+    # On pondère par le max impact_score du gène chez ce patient
     if use_genomic:
         top_genes = df["Gene_symbol"].value_counts().head(top_n_genes).index.tolist()
         for gene in top_genes:
-            carriers = df[df["Gene_symbol"] == gene]["Pseudo"].unique()
+            gene_data = df[df["Gene_symbol"] == gene]
+            # Binaire : le patient a-t-il une mutation fonctionnelle dans ce gène ?
+            carriers = gene_data["Pseudo"].unique()
             df_feat[f"gene_{gene}"] = df_feat.index.isin(carriers).astype(int)
+            
+            # Score max du gène chez chaque patient (0 si pas muté)
+            gene_max_scores = gene_data.groupby("Pseudo")["impact_score"].max()
+            df_feat[f"genescore_{gene}"] = df_feat.index.map(
+                lambda p, gms=gene_max_scores: gms.get(p, 0)
+            )
 
     if use_clinical:
         avail = [c for c in CLINICAL_COLS if c in df.columns]
@@ -520,13 +604,14 @@ with tab_var:
     st.markdown(f"**{len(dv):,} variants**")
     sc = ["Pseudo", "Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect",
           "Putative_impact", "ACMG_class", "Clinvar_significance", "CADD_phred",
-          "gnomad_exomes_AF", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth"]
+          "gnomad_exomes_AF", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
     sc = [c for c in sc if c in dv.columns]
     st.dataframe(dv[sc].reset_index(drop=True), use_container_width=True, height=600,
         column_config={
             "CADD_phred": st.column_config.NumberColumn("CADD", format="%.1f"),
             "gnomad_exomes_AF": st.column_config.NumberColumn("gnomAD AF", format="%.5f"),
             "Allelic_ratio": st.column_config.ProgressColumn("AR", min_value=0, max_value=1, format="%.2f"),
+            "impact_score": st.column_config.NumberColumn("Impact Score", format="%.1f"),
         })
     st.download_button("📥 Télécharger (CSV)", dv[sc].to_csv(index=False, sep=";"),
                        "variants_filtered.csv", "text/csv")
@@ -571,14 +656,14 @@ with tab_pat:
     dp_p = dp[dp["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]
     if len(dp_p) > 0:
         pc = ["Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "ACMG_class",
-              "Clinvar_significance", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth"]
+              "Clinvar_significance", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth", "impact_score"]
         st.dataframe(dp_p[[c for c in pc if c in dp_p.columns]].reset_index(drop=True), use_container_width=True)
     else:
         st.success("Aucun variant pathogène / LP.")
 
     st.markdown("### Tous les variants")
     ac = ["Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "Putative_impact",
-          "ACMG_class", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth"]
+          "ACMG_class", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth", "impact_score"]
     st.dataframe(dp[[c for c in ac if c in dp.columns]].reset_index(drop=True),
                  use_container_width=True, height=400)
 
@@ -614,7 +699,7 @@ with tab_gene:
         st.plotly_chart(fig, use_container_width=True)
 
     gc = ["Pseudo", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "Putative_impact",
-          "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth"]
+          "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_AF", "Allelic_ratio", "Depth", "impact_score"]
     st.dataframe(dg[[c for c in gc if c in dg.columns]].reset_index(drop=True),
                  use_container_width=True, height=400)
 
@@ -695,11 +780,22 @@ with tab_clust:
         cl_exclude_benign = st.checkbox("Exclure Benign / Likely Benign", value=True,
             help="Focus sur les variants potentiellement pathogènes")
 
+    # Filtrage des effets non fonctionnels
+    st.markdown("**Exclusion des variants non fonctionnels**")
+    excluded_effects = st.multiselect(
+        "Types de variants à exclure",
+        sorted(NON_FUNCTIONAL_EFFECTS),
+        default=sorted(NON_FUNCTIONAL_EFFECTS),
+        help="Les variants synonymes, introniques, UTR, etc. n'ont en général pas d'impact "
+             "fonctionnel et ajoutent du bruit au clustering.",
+    )
+
     # Appliquer les filtres qualité
     df_clust = df_f[
         (df_f["Depth"] >= cl_depth_min) &
         (df_f["Allelic_ratio"] >= cl_ar_min) &
-        (df_f["gnomad_exomes_AF"].fillna(0) <= cl_af_max)
+        (df_f["gnomad_exomes_AF"].fillna(0) <= cl_af_max) &
+        (~df_f["Variant_effect"].isin(excluded_effects))
     ].copy()
 
     if cl_exclude_benign:
@@ -725,8 +821,9 @@ with tab_clust:
     st.markdown("---")
     st.markdown("### ⚙️ Paramètres du clustering")
     st.markdown(
-        "> Le clustering utilise des **proportions** (% de variants par classe ACMG, par type, par impact) "
-        "et des **features binaires** (gène muté oui/non) pour éviter tout biais lié au nombre total de variants."
+        "> Le clustering utilise des **proportions** (%), des **scores d'impact composites** "
+        "(combinant CADD, rareté, ClinVar et impact fonctionnel), et des **features binaires** "
+        "par gène. Les variants non fonctionnels (synonymes, introniques, UTR) sont exclus."
     )
     cp1, cp2, cp3 = st.columns(3)
     with cp1: use_gen = st.checkbox("Features génomiques", True)
@@ -772,7 +869,7 @@ with tab_clust:
         "Cluster": cluster_labels, "Patient": df_feat.index,
     })
     for col in df_feat.columns:
-        if col.startswith("pct_") or col.startswith("median_") or col.startswith("mean_") or col in [
+        if col.startswith("pct_") or col.startswith("median_") or col.startswith("mean_") or col.startswith("impact_score") or col in [
             "n_unique_genes", "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
             "Recidive", "BO", "PNP", "MG", "FDSCS"]:
             df_u[col] = df_feat[col].values
@@ -787,7 +884,8 @@ with tab_clust:
 
     # UMAP
     st.markdown("### Projection UMAP")
-    hover_extra = [c for c in ["pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS", "n_unique_genes"]
+    hover_extra = [c for c in ["pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS",
+                               "impact_score_mean", "pct_high_impact_score", "n_unique_genes"]
                    if c in df_u.columns]
     fig = px.scatter(df_u, x="UMAP_1", y="UMAP_2", color="Cluster", text="Patient",
         hover_data=["Patient", "Cluster"] + hover_extra,
@@ -816,6 +914,9 @@ with tab_clust:
         "pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS", "pct_Likely Benign", "pct_Benign",
         "pct_impact_high", "pct_impact_moderate", "pct_impact_low",
         "pct_missensevariant", "pct_frameshiftvariant", "pct_stopgained",
+        "pct_disruptiveinframedeletion", "pct_startlost",
+        "impact_score_mean", "impact_score_max", "impact_score_p75",
+        "pct_high_impact_score",
         "median_CADD", "median_AR", "mean_gnomAD_AF", "n_unique_genes"]]
     key_clin = [c for c in df_fc.columns if c in [
         "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
