@@ -469,9 +469,9 @@ df_f = df_f[
 # ─────────────────────────────────────────────
 # ONGLETS
 # ─────────────────────────────────────────────
-tab_ov, tab_var, tab_pat, tab_gene, tab_acmg, tab_coocc, tab_clust = st.tabs(
+tab_ov, tab_var, tab_pat, tab_gene, tab_acmg, tab_vaf, tab_coocc, tab_clust = st.tabs(
     ["📊 Vue d'ensemble", "🔎 Variants", "👤 Patient", "🧬 Gène", "🏷️ ACMG",
-     "🔗 Co-occurrence", "🔬 Clustering"]
+     "📈 VAF & Clonalité", "🔗 Co-occurrence", "🔬 Clustering"]
 )
 
 # ═══════ VUE D'ENSEMBLE ═══════
@@ -663,6 +663,217 @@ with tab_acmg:
         height=max(400, len(hm_pct)*22), xaxis_title="% variants", margin=dict(l=100),
         title="Profil ACMG par patient (%)")
     st.plotly_chart(fig, use_container_width=True)
+
+# ═══════════════════════════════════════════════════════
+# VAF & CLONALITÉ
+# ═══════════════════════════════════════════════════════
+with tab_vaf:
+    st.markdown("## 📈 VAF & Charge Tumorale")
+    st.markdown(
+        "Analyse de la **fréquence allélique des variants (VAF)** par patient. "
+        "La distribution des VAFs reflète la structure clonale de la tumeur : "
+        "les VAFs élevées correspondent à des mutations **clonales** (événements précoces), "
+        "les VAFs basses à des clones mineurs (hétérogénéité intra-tumorale)."
+    )
+    st.markdown(
+        "> ⚠️ En FFPE sans contrôle de pureté tumorale, les VAFs absolues sont modulées "
+        "par le ratio tumeur/normal. La **distribution relative** reste informative."
+    )
+
+    # Filtres qualité pour VAF
+    st.markdown("### Filtres")
+    vc1, vc2, vc3 = st.columns(3)
+    with vc1:
+        vaf_depth = st.number_input("Profondeur min", value=100, step=50, key="vaf_d")
+    with vc2:
+        vaf_af_max = st.number_input("gnomAD NFE max", value=0.01, step=0.005, format="%.3f", key="vaf_af")
+    with vc3:
+        vaf_excl_nf = st.checkbox("Exclure non fonctionnels", value=True, key="vaf_nf")
+
+    df_vaf = df_f[(df_f["Depth"] >= vaf_depth) &
+                  (df_f["gnomad_exomes_NFE_AF"].fillna(0) <= vaf_af_max)].copy()
+    if vaf_excl_nf:
+        df_vaf = df_vaf[~df_vaf["Variant_effect"].isin(NON_FUNCTIONAL_EFFECTS)]
+
+    # Exclure benign pour focus tumoral
+    df_vaf = df_vaf[~df_vaf["ACMG_class"].isin(["Benign", "Likely Benign"])]
+
+    st.markdown(f"**{len(df_vaf):,} variants** après filtrage")
+
+    if len(df_vaf) > 0:
+        # ── RÉSUMÉ TMB PAR PATIENT ──
+        st.markdown("### Charge mutationnelle par patient")
+
+        tmb_summary = []
+        for pseudo in sorted(df_vaf["Pseudo"].unique()):
+            dp = df_vaf[df_vaf["Pseudo"] == pseudo]
+            vafs = dp["Allelic_ratio"]
+            tmb_summary.append({
+                "Patient": pseudo,
+                "N_variants": len(dp),
+                "N_gènes": dp["Gene_symbol"].nunique(),
+                "VAF_médiane": round(vafs.median(), 3),
+                "VAF_max": round(vafs.max(), 3),
+                "N_clonal (VAF≥0.25)": int((vafs >= 0.25).sum()),
+                "N_sous-clonal (0.1-0.25)": int(((vafs >= 0.1) & (vafs < 0.25)).sum()),
+                "N_mineur (VAF<0.1)": int((vafs < 0.1).sum()),
+                "% clonal": round((vafs >= 0.25).sum() / max(len(vafs), 1) * 100, 1),
+                "Score TMB": round(len(dp) * vafs.mean(), 2),  # nb variants × VAF moyenne
+            })
+        df_tmb = pd.DataFrame(tmb_summary).sort_values("Score TMB", ascending=False)
+
+        # Bar chart TMB
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df_tmb["Patient"], y=df_tmb["N_clonal (VAF≥0.25)"],
+            name="Clonal (VAF ≥ 0.25)", marker_color="#ff6b6b"))
+        fig.add_trace(go.Bar(
+            x=df_tmb["Patient"], y=df_tmb["N_sous-clonal (0.1-0.25)"],
+            name="Sous-clonal (0.1–0.25)", marker_color="#ffa500"))
+        fig.add_trace(go.Bar(
+            x=df_tmb["Patient"], y=df_tmb["N_mineur (VAF<0.1)"],
+            name="Mineur (VAF < 0.1)", marker_color="#4ecdc4"))
+        fig.update_layout(barmode="stack", template="plotly_dark",
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            height=450, xaxis_tickangle=-45, margin=dict(b=100),
+            title="Structure clonale par patient",
+            yaxis_title="Nombre de variants", legend_title="Clonalité")
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Tableau TMB
+        st.dataframe(df_tmb.reset_index(drop=True), use_container_width=True, height=400,
+            column_config={
+                "VAF_médiane": st.column_config.NumberColumn("VAF méd.", format="%.3f"),
+                "VAF_max": st.column_config.NumberColumn("VAF max", format="%.3f"),
+                "Score TMB": st.column_config.NumberColumn("Score TMB", format="%.1f"),
+                "% clonal": st.column_config.ProgressColumn("% clonal", min_value=0, max_value=100, format="%.1f%%"),
+            })
+
+        st.markdown("---")
+
+        # ── VUE PAR PATIENT : SPECTRE VAF ──
+        st.markdown("### Spectre VAF par patient")
+        vaf_patient = st.selectbox("Patient", df_tmb["Patient"].tolist(), key="vaf_pat")
+        dp_vaf = df_vaf[df_vaf["Pseudo"] == vaf_patient]
+
+        vl, vr = st.columns(2)
+
+        with vl:
+            # Histogramme VAF
+            fig = px.histogram(dp_vaf, x="Allelic_ratio", nbins=30,
+                color="ACMG_class", color_discrete_map=ACMG_COLORS,
+                category_orders={"ACMG_class": ACMG_ORDER},
+                barmode="overlay", opacity=0.7)
+            fig.add_vline(x=0.25, line_dash="dash", line_color="#ff6b6b", opacity=0.7,
+                          annotation_text="Clonal (0.25)")
+            fig.add_vline(x=0.1, line_dash="dash", line_color="#ffa500", opacity=0.5,
+                          annotation_text="Sous-clonal (0.1)")
+            fig.update_layout(title=f"Distribution VAF — {vaf_patient}",
+                template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)", height=400,
+                xaxis_title="VAF (Allelic Ratio)", yaxis_title="Variants")
+            st.plotly_chart(fig, use_container_width=True)
+
+        with vr:
+            # VAF vs Impact Score
+            fig = px.scatter(dp_vaf, x="Allelic_ratio", y="impact_score",
+                color="Putative_impact", color_discrete_map=IMPACT_COLORS,
+                size="Depth", size_max=15,
+                hover_data=["Gene_symbol", "hgvs.c", "hgvs.p", "ACMG_class"],
+                category_orders={"Putative_impact": IMPACT_ORDER})
+            fig.add_vline(x=0.25, line_dash="dash", line_color="#ff6b6b", opacity=0.5)
+            fig.update_layout(title=f"VAF vs Impact Score — {vaf_patient}",
+                template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)", height=400,
+                xaxis_title="VAF", yaxis_title="Impact Score")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Lollipop : gène × VAF
+        st.markdown("### Gènes par VAF")
+        gene_vaf = dp_vaf.groupby("Gene_symbol").agg(
+            max_VAF=("Allelic_ratio", "max"),
+            mean_VAF=("Allelic_ratio", "mean"),
+            n_variants=("Variant", "count"),
+            max_impact=("impact_score", "max"),
+            best_acmg=("ACMG_class", "first"),
+        ).sort_values("max_VAF", ascending=False).head(30)
+
+        fig = go.Figure()
+        # Lignes verticales (lollipop sticks)
+        for i, (gene, row) in enumerate(gene_vaf.iterrows()):
+            color = ACMG_COLORS.get(row["best_acmg"], "#888")
+            fig.add_trace(go.Scatter(
+                x=[row["max_VAF"]], y=[gene],
+                mode="markers", marker=dict(size=row["max_impact"] * 2.5 + 4, color=color),
+                showlegend=False,
+                hovertemplate=f"<b>{gene}</b><br>Max VAF: {row['max_VAF']:.3f}<br>"
+                    f"Impact: {row['max_impact']:.1f}<br>{row['n_variants']} variant(s)<extra></extra>",
+            ))
+
+        fig.add_vline(x=0.25, line_dash="dash", line_color="#ff6b6b", opacity=0.5,
+                      annotation_text="Clonal")
+        fig.add_vline(x=0.1, line_dash="dash", line_color="#ffa500", opacity=0.4,
+                      annotation_text="Sous-clonal")
+        fig.update_layout(
+            template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            height=max(400, len(gene_vaf) * 22),
+            xaxis_title="VAF max", yaxis_title="",
+            title=f"Gènes mutés — {vaf_patient} (taille = impact score, couleur = ACMG)",
+            margin=dict(l=120))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Tableau des variants clonaux
+        st.markdown("### 🔴 Variants clonaux (VAF ≥ 0.25)")
+        clonal = dp_vaf[dp_vaf["Allelic_ratio"] >= 0.25].sort_values("Allelic_ratio", ascending=False)
+        if len(clonal) > 0:
+            cl_cols = ["Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect",
+                       "ACMG_class", "Allelic_ratio", "Depth", "CADD_phred", "impact_score"]
+            st.dataframe(clonal[[c for c in cl_cols if c in clonal.columns]].reset_index(drop=True),
+                use_container_width=True,
+                column_config={
+                    "Allelic_ratio": st.column_config.ProgressColumn("VAF", min_value=0, max_value=1, format="%.3f"),
+                    "impact_score": st.column_config.NumberColumn("Impact", format="%.1f"),
+                })
+        else:
+            st.info("Aucun variant clonal (VAF ≥ 0.25) pour ce patient.")
+
+        st.markdown("---")
+
+        # ── COMPARAISON MULTI-PATIENTS ──
+        st.markdown("### Comparaison VAF entre patients")
+
+        # Boxplot VAF par patient
+        fig = px.box(df_vaf, x="Pseudo", y="Allelic_ratio", color="Pseudo",
+            points="outliers", notched=True)
+        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)", height=450,
+            title="Distribution VAF par patient",
+            xaxis_tickangle=-45, margin=dict(b=100),
+            xaxis_title="", yaxis_title="VAF",
+            showlegend=False)
+        fig.add_hline(y=0.25, line_dash="dash", line_color="#ff6b6b", opacity=0.5)
+        fig.add_hline(y=0.1, line_dash="dash", line_color="#ffa500", opacity=0.4)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Scatter TMB score vs % clonal
+        st.markdown("### Score TMB vs Proportion clonale")
+        fig = px.scatter(df_tmb, x="Score TMB", y="% clonal",
+            text="Patient", size="N_variants", size_max=20,
+            color="VAF_médiane", color_continuous_scale=["#4ecdc4", "#ffa500", "#ff6b6b"],
+            hover_data=["N_gènes", "N_clonal (VAF≥0.25)", "VAF_max"])
+        fig.update_traces(textposition="top center", textfont_size=9)
+        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)", height=500,
+            xaxis_title="Score TMB (N variants × VAF moyenne)",
+            yaxis_title="% de variants clonaux (VAF ≥ 0.25)")
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Export
+        csv_tmb = df_tmb.to_csv(index=False, sep=";")
+        st.download_button("📥 Exporter TMB (CSV)", csv_tmb, "tmb_summary.csv", "text/csv")
+    else:
+        st.warning("Pas assez de variants après filtrage.")
 
 # ═══════════════════════════════════════════════════════
 # CO-OCCURRENCE / CO-EXCLUSION
