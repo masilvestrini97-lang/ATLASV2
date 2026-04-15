@@ -19,6 +19,9 @@ from scipy.cluster.hierarchy import linkage
 from scipy.stats import fisher_exact
 import umap
 import json
+import io
+import tempfile
+import os
 
 try:
     import anthropic
@@ -434,6 +437,279 @@ def call_anthropic_api(prompt, api_key):
     msg = client.messages.create(model="claude-sonnet-4-20250514", max_tokens=4000,
                                   messages=[{"role": "user", "content": prompt}])
     return msg.content[0].text
+
+
+def generate_cluster_report(df_clust, df_feat, cluster_labels, interpretations,
+                            gene_sigs, sil_score, method_name, key_feat,
+                            excluded_patients=None, pathways_dict=None):
+    """Genere un rapport PDF complet sur le clustering."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm, cm
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+                                     TableStyle, PageBreak, Image, HRFlowable)
+    import datetime
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+        topMargin=2*cm, bottomMargin=2*cm, leftMargin=2*cm, rightMargin=2*cm)
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name='MainTitle', parent=styles['Title'],
+        fontSize=22, spaceAfter=6, textColor=colors.HexColor("#1a1a2e")))
+    styles.add(ParagraphStyle(name='SubTitle2', parent=styles['Normal'],
+        fontSize=12, textColor=colors.HexColor("#666666"), spaceAfter=20))
+    styles.add(ParagraphStyle(name='SectionTitle', parent=styles['Heading1'],
+        fontSize=16, textColor=colors.HexColor("#0f3460"), spaceBefore=20, spaceAfter=10))
+    styles.add(ParagraphStyle(name='SubSection', parent=styles['Heading2'],
+        fontSize=13, textColor=colors.HexColor("#16213e"), spaceBefore=14, spaceAfter=8))
+    styles.add(ParagraphStyle(name='BodyJ', parent=styles['Normal'],
+        fontSize=9, leading=13, alignment=TA_JUSTIFY))
+    styles.add(ParagraphStyle(name='Small', parent=styles['Normal'],
+        fontSize=8, leading=10, textColor=colors.HexColor("#555555")))
+    styles.add(ParagraphStyle(name='ClusterName2', parent=styles['Heading2'],
+        fontSize=14, textColor=colors.HexColor("#ff6b6b"), spaceBefore=16, spaceAfter=6))
+    styles.add(ParagraphStyle(name='FeatureUp', parent=styles['Normal'],
+        fontSize=9, textColor=colors.HexColor("#cc0000")))
+    styles.add(ParagraphStyle(name='FeatureDown', parent=styles['Normal'],
+        fontSize=9, textColor=colors.HexColor("#008080")))
+
+    story = []
+
+    def make_table(data, col_widths=None, header_color="#0f3460"):
+        t = Table(data, colWidths=col_widths, repeatRows=1)
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(header_color)),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        return t
+
+    df_fc = df_feat.copy()
+    df_fc["Cluster"] = cluster_labels
+    n_clusters = len(set(cluster_labels))
+
+    # ========== PAGE 1 : TITRE + RESUME ==========
+    story.append(Spacer(1, 30))
+    story.append(Paragraph("Variant Explorer - Rapport de Clustering", styles['MainTitle']))
+    story.append(Paragraph(f"Date : {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}", styles['SubTitle2']))
+    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#0f3460")))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Resume executif", styles['SectionTitle']))
+
+    summary = [
+        ["Parametre", "Valeur"],
+        ["Patients analyses", str(len(df_feat))],
+        ["Patients exclus (FFPE/techniques)", str(len(excluded_patients)) if excluded_patients else "0"],
+        ["Variants (apres filtrage)", f"{len(df_clust):,}"],
+        ["Genes", str(df_clust["Gene_symbol"].nunique())],
+        ["Nombre de clusters", str(n_clusters)],
+        ["Methode", method_name],
+        ["Score silhouette", f"{sil_score:.3f}"],
+        ["Features utilisees", str(len(key_feat))],
+    ]
+    story.append(make_table(summary, col_widths=[160, 220]))
+    story.append(Spacer(1, 10))
+
+    if excluded_patients:
+        story.append(Paragraph("Patients exclus du clustering biologique", styles['SubSection']))
+        story.append(Paragraph(
+            f"Retires avant clustering (VAF mediane trop basse / trop peu de variants) : "
+            f"<b>{', '.join(sorted(excluded_patients))}</b>", styles['BodyJ']))
+        story.append(Spacer(1, 6))
+
+    sil_txt = ("Bonne separation." if sil_score > 0.5
+               else "Separation moderee." if sil_score > 0.3
+               else "Faible separation, chevauchement partiel.")
+    story.append(Paragraph(f"<b>Silhouette ({sil_score:.3f})</b> : {sil_txt}", styles['BodyJ']))
+
+    # ========== PAGE 2 : PROFILS GLOBAUX ==========
+    story.append(PageBreak())
+    story.append(Paragraph("Profil global des clusters", styles['SectionTitle']))
+
+    # Tableau comparatif clusters
+    comp_cols = [("vaf_median", "VAF med."), ("vaf_mean", "VAF moy."),
+                 ("pct_clonal", "% clonal"), ("pct_minor", "% mineur"),
+                 ("clonal_ratio", "Ratio cl/min"), ("tmb_score", "Score TMB"),
+                 ("impact_score_mean", "Impact moy"), ("n_unique_genes", "N genes"),
+                 ("pct_Pathogenic", "% Patho"), ("pct_VUS", "% VUS"),
+                 ("pct_impact_high", "% HIGH"), ("median_CADD", "CADD med")]
+
+    avail_comp = [(c, l) for c, l in comp_cols if c in df_fc.columns]
+    if avail_comp:
+        header = ["Cluster", "N pat."] + [l for _, l in avail_comp]
+        comp_data = [header]
+        for cl in sorted(df_fc["Cluster"].unique()):
+            sub = df_fc[df_fc["Cluster"] == cl]
+            row_data = [str(cl), str(len(sub))]
+            for c, _ in avail_comp:
+                v = sub[c].mean()
+                row_data.append(f"{v:.3f}" if v < 1 else f"{v:.1f}")
+            comp_data.append(row_data)
+        # Ligne globale
+        glob_row = ["GLOBAL", str(len(df_fc))]
+        for c, _ in avail_comp:
+            v = df_fc[c].mean()
+            glob_row.append(f"{v:.3f}" if v < 1 else f"{v:.1f}")
+        comp_data.append(glob_row)
+
+        story.append(Paragraph("Comparaison inter-clusters (moyennes)", styles['SubSection']))
+        cw = [65, 35] + [42] * len(avail_comp)
+        t_comp = make_table(comp_data, col_widths=cw)
+        story.append(t_comp)
+    story.append(Spacer(1, 12))
+
+    # Heatmap features cles
+    if key_feat:
+        story.append(Paragraph("Heatmap des features cles", styles['SubSection']))
+        display_kf = [f for f in key_feat if not f.startswith("pw_")][:20]
+        hm_data = [["Feature", "Global"] + sorted(df_fc["Cluster"].unique())]
+        for f in display_kf:
+            label = FEATURE_LABELS.get(f, f.replace("pct_", "").replace("_", " "))[:25]
+            row_hm = [label, f"{df_fc[f].mean():.2f}"]
+            for cl in sorted(df_fc["Cluster"].unique()):
+                v = df_fc[df_fc["Cluster"] == cl][f].mean()
+                row_hm.append(f"{v:.2f}")
+            hm_data.append(row_hm)
+        cw_hm = [100, 45] + [50] * n_clusters
+        story.append(make_table(hm_data, col_widths=cw_hm, header_color="#16213e"))
+
+    # ========== PAGES 3+ : DETAIL PAR CLUSTER ==========
+    for cid in sorted(interpretations.keys()):
+        interp = interpretations[cid]
+        story.append(PageBreak())
+        story.append(Paragraph(f"{cid}", styles['ClusterName2']))
+        story.append(Paragraph(
+            f"<b>{interp['n_patients']} patients</b> : {', '.join(sorted(interp['patients']))}",
+            styles['BodyJ']))
+        story.append(Spacer(1, 8))
+
+        cluster_data = df_fc[df_fc["Cluster"] == cid]
+
+        # Stats descriptives
+        story.append(Paragraph("Statistiques descriptives", styles['SubSection']))
+        stat_items = [("vaf_median", "VAF mediane"), ("pct_clonal", "% clonal"),
+                      ("pct_minor", "% mineur"), ("tmb_score", "Score TMB"),
+                      ("impact_score_mean", "Score impact moy"), ("n_unique_genes", "Genes uniques"),
+                      ("pct_Pathogenic", "% Pathogenes"), ("pct_VUS", "% VUS"),
+                      ("pct_impact_high", "% Impact HIGH"), ("median_CADD", "CADD median"),
+                      ("clonal_ratio", "Ratio clonal/mineur")]
+        stat_data = [["Metrique", "Moyenne", "Mediane", "Ecart-type", "Min", "Max"]]
+        for col, label in stat_items:
+            if col in cluster_data.columns:
+                vals = cluster_data[col]
+                stat_data.append([label, f"{vals.mean():.2f}", f"{vals.median():.2f}",
+                    f"{vals.std():.2f}", f"{vals.min():.2f}", f"{vals.max():.2f}"])
+        story.append(make_table(stat_data, col_widths=[90, 55, 55, 55, 55, 55]))
+        story.append(Spacer(1, 8))
+
+        # Features discriminantes
+        sig = interp["significant"]
+        if len(sig) > 0:
+            story.append(Paragraph("Features discriminantes (|z| &gt; 0.5)", styles['SubSection']))
+            enriched = sig[sig > 0]
+            if len(enriched) > 0:
+                story.append(Paragraph("<b>Enrichies :</b>", styles['BodyJ']))
+                for feat, z in enriched.items():
+                    label = FEATURE_LABELS.get(feat, feat.replace("pw_pct_", "PW: ").replace("pct_", "").replace("_", " "))
+                    val = interp['cluster_mean'][feat]
+                    glob = interp['global_mean'][feat]
+                    story.append(Paragraph(
+                        f"  &#9650; {label} : {val:.2f} vs {glob:.2f} (z = {z:+.2f})", styles['FeatureUp']))
+            depleted = sig[sig < 0]
+            if len(depleted) > 0:
+                story.append(Spacer(1, 3))
+                story.append(Paragraph("<b>Reduites :</b>", styles['BodyJ']))
+                for feat, z in depleted.items():
+                    label = FEATURE_LABELS.get(feat, feat.replace("pw_pct_", "PW: ").replace("pct_", "").replace("_", " "))
+                    val = interp['cluster_mean'][feat]
+                    glob = interp['global_mean'][feat]
+                    story.append(Paragraph(
+                        f"  &#9660; {label} : {val:.2f} vs {glob:.2f} (z = {z:+.2f})", styles['FeatureDown']))
+        story.append(Spacer(1, 8))
+
+        # Genes
+        if cid in gene_sigs:
+            gs = gene_sigs[cid]
+            if len(gs["pathogenic_genes"]) > 0:
+                story.append(Paragraph("Genes avec variants pathogenes", styles['SubSection']))
+                gd = [["Gene", "N variants"]]
+                for g, c in gs["pathogenic_genes"].head(10).items():
+                    gd.append([str(g), str(c)])
+                story.append(make_table(gd, col_widths=[120, 100], header_color="#cc0000"))
+                story.append(Spacer(1, 4))
+            if len(gs["enriched_genes"]) > 0:
+                story.append(Paragraph("Genes enrichis (vs autres clusters)", styles['SubSection']))
+                ed = [["Gene", "Enrichissement"]]
+                for g, r in gs["enriched_genes"].head(10).items():
+                    ed.append([str(g), f"x{r:.1f}"])
+                story.append(make_table(ed, col_widths=[120, 100], header_color="#008080"))
+        story.append(Spacer(1, 6))
+
+        # Tableau patients
+        story.append(Paragraph("Detail des patients", styles['SubSection']))
+        pat_data = [["Patient", "VAF med.", "% clonal", "TMB", "Impact", "Genes", "% Patho", "% VUS"]]
+        for pat in sorted(interp["patients"]):
+            if pat in df_feat.index:
+                r = df_feat.loc[pat]
+                pat_data.append([pat,
+                    f"{r.get('vaf_median', 0):.3f}", f"{r.get('pct_clonal', 0):.1f}%",
+                    f"{r.get('tmb_score', 0):.1f}", f"{r.get('impact_score_mean', 0):.2f}",
+                    f"{int(r.get('n_unique_genes', 0))}", f"{r.get('pct_Pathogenic', 0):.1f}%",
+                    f"{r.get('pct_VUS', 0):.1f}%"])
+        story.append(make_table(pat_data, col_widths=[55, 45, 45, 40, 40, 40, 45, 40]))
+
+    # ========== ANNEXE ==========
+    story.append(PageBreak())
+    story.append(Paragraph("Annexe : Matrice complete des features cles", styles['SectionTitle']))
+    display_feats = [c for c in key_feat if not c.startswith("pw_") and not c.startswith("gene")][:15]
+    if display_feats:
+        header = ["Patient", "Cluster"] + [FEATURE_LABELS.get(f, f)[:16] for f in display_feats]
+        annex = [header]
+        for pat in sorted(df_feat.index):
+            cl = df_fc.loc[pat, "Cluster"]
+            row = [pat, str(cl)]
+            for f in display_feats:
+                v = df_feat.loc[pat].get(f, 0)
+                row.append(f"{v:.2f}" if abs(v) < 100 else f"{v:.0f}")
+            annex.append(row)
+        cw_a = [50, 50] + [35] * len(display_feats)
+        story.append(make_table(annex, col_widths=cw_a, header_color="#0f3460"))
+
+    # ========== METHODOLOGIE ==========
+    story.append(PageBreak())
+    story.append(Paragraph("Methodologie", styles['SectionTitle']))
+    story.append(Paragraph(
+        "Filtrage qualite : profondeur minimale, ratio allelique minimum, frequence gnomAD NFE maximale. "
+        "Exclusion des variants synonymes, introniques et UTR. Features genomiques en proportions (%) "
+        "pour neutraliser le biais lie a la qualite FFPE. Features VAF (mediane, % clonal, ratio "
+        "clonal/mineur, score TMB) integrees pour capturer la structure clonale. Features de genes "
+        "binaires ponderees par score d'impact maximal. Pathways (GMT, MSigDB) representes par le "
+        "pourcentage de genes touches et le score d'impact maximal.", styles['BodyJ']))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        "Score d'impact composite (0-10) par variant : impact fonctionnel (HIGH=4, MODERATE=2, "
+        "LOW=0.5), CADD normalise (0-2), rarete allelique gnomAD NFE (0-2), ClinVar (0-2).",
+        styles['BodyJ']))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        f"Clustering : {method_name} apres standardisation z-score. "
+        f"Score silhouette : {sil_score:.3f}. UMAP pour visualisation 2D. "
+        f"Mode 2 etapes : exclusion prealable des suspects FFPE (VAF mediane basse).",
+        styles['BodyJ']))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
+
 
 # ─────────────────────────────────────────────
 # HEADER & CHARGEMENT
@@ -1393,8 +1669,41 @@ with tab_clust:
                     f'{st.session_state["ai_interpretation"]}</div>', unsafe_allow_html=True)
 
     st.markdown("### Export")
-    exp = df_u[["Patient", "Cluster", "UMAP_1", "UMAP_2"]].to_csv(index=False, sep=";")
-    st.download_button("📥 Clusters (CSV)", exp, "clusters.csv", "text/csv")
+    exp_c1, exp_c2 = st.columns(2)
+
+    with exp_c1:
+        exp = df_u[["Patient", "Cluster", "UMAP_1", "UMAP_2"]].to_csv(index=False, sep=";")
+        st.download_button("📥 Clusters (CSV)", exp, "clusters.csv", "text/csv",
+                           use_container_width=True)
+
+    with exp_c2:
+        if st.button("📊 Générer rapport PDF complet", type="primary", use_container_width=True):
+            with st.spinner("Génération du rapport PDF (peut prendre 30s)..."):
+                try:
+                    pdf_bytes = generate_cluster_report(
+                        df_clust=df_clust_bio if two_step else df_clust,
+                        df_feat=df_feat,
+                        cluster_labels=cluster_labels,
+                        interpretations=interpretations,
+                        gene_sigs=gene_sigs,
+                        sil_score=sil,
+                        method_name=method,
+                        key_feat=key_feat,
+                        excluded_patients=excluded_patients if two_step else [],
+                        pathways_dict=pathways_dict,
+                    )
+                    st.session_state["pdf_report"] = pdf_bytes
+                    st.success("✅ Rapport généré !")
+                except Exception as e:
+                    st.error(f"Erreur lors de la génération du rapport : {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+    if "pdf_report" in st.session_state:
+        st.download_button("📥 Télécharger le rapport PDF",
+            st.session_state["pdf_report"],
+            "rapport_clustering.pdf", "application/pdf",
+            use_container_width=True)
 
 # Footer
 st.markdown("---")
