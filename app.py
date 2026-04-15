@@ -90,8 +90,12 @@ FEATURE_LABELS = {
     "pct_disruptiveinframedeletion": "% Dél. in-frame disruptive", "pct_startlost": "% Start Lost",
     "impact_score_mean": "Score impact moyen", "impact_score_max": "Score impact max",
     "impact_score_p75": "Score impact P75", "pct_high_impact_score": "% Haut impact (≥6)",
-    "median_CADD": "CADD médian", "median_AR": "AR médian",
+    "median_CADD": "CADD médian",
     "mean_gnomAD_AF": "gnomAD NFE moyen", "n_unique_genes": "Gènes uniques",
+    "vaf_median": "VAF médiane", "vaf_mean": "VAF moyenne", "vaf_max": "VAF max",
+    "vaf_iqr": "VAF IQR (dispersion)", "pct_clonal": "% clonal (VAF≥0.25)",
+    "pct_subclonal": "% sous-clonal (0.1-0.25)", "pct_minor": "% mineur (VAF<0.1)",
+    "clonal_ratio": "Ratio clonal/mineur", "tmb_score": "Score TMB",
     "Histo_HV": "Histo HV", "Histo_mixed": "Histo mixed",
     "Complication": "Complications", "Chirurgie": "Chirurgie", "Recidive": "Récidive",
     "BO": "BO", "PNP": "PNP", "MG": "MG", "FDSCS": "FDSCS",
@@ -254,7 +258,7 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, use_pathways
                            top_n_genes=30, pathways_dict=None):
     """
     Matrice patient × features pour clustering.
-    Proportions + scores d'impact + pathways + clinique.
+    Proportions + scores d'impact + VAF/clonalité + pathways + clinique.
     """
     patients = df["Pseudo"].unique()
     features = {}
@@ -281,9 +285,21 @@ def build_patient_features(df, use_genomic=True, use_clinical=True, use_pathways
             row["impact_score_p75"] = scores.quantile(0.75)
             row["pct_high_impact_score"] = (len(scores[scores >= 6]) / n_total) * 100
             row["median_CADD"] = dp["CADD_phred"].median() if dp["CADD_phred"].notna().any() else 0
-            row["median_AR"] = dp["Allelic_ratio"].median()
             row["mean_gnomAD_AF"] = dp["gnomad_exomes_NFE_AF"].mean() if dp["gnomad_exomes_NFE_AF"].notna().any() else 0
             row["n_unique_genes"] = dp["Gene_symbol"].nunique()
+
+            # ── VAF / CLONALITÉ (nouvelles features) ──
+            vafs = dp["Allelic_ratio"]
+            row["vaf_median"] = vafs.median()
+            row["vaf_mean"] = vafs.mean()
+            row["vaf_max"] = vafs.max()
+            row["vaf_iqr"] = vafs.quantile(0.75) - vafs.quantile(0.25)
+            row["pct_clonal"] = (vafs >= 0.25).sum() / n_total * 100
+            row["pct_subclonal"] = ((vafs >= 0.1) & (vafs < 0.25)).sum() / n_total * 100
+            row["pct_minor"] = (vafs < 0.1).sum() / n_total * 100
+            row["clonal_ratio"] = (vafs >= 0.25).sum() / max((vafs < 0.1).sum(), 1)
+            # Score TMB composite
+            row["tmb_score"] = n_total * vafs.mean()
 
         features[pseudo] = row
 
@@ -1086,6 +1102,60 @@ with tab_clust:
     # ── PARAMÈTRES CLUSTERING ──
     st.markdown("---")
     st.markdown("### ⚙️ Paramètres")
+
+    # ── OPTION CLUSTERING 2 ÉTAPES ──
+    two_step = st.checkbox("🔬 Clustering en 2 étapes (recommandé)", value=True,
+        help="Étape 1 : exclut automatiquement les patients suspects FFPE (VAF médiane très basse) "
+             "pour éviter que le bruit de dégradation ne pollue les groupements biologiques. "
+             "Étape 2 : clustering des patients fiables uniquement.")
+
+    if two_step:
+        st.markdown(
+            "> **Mode 2 étapes** : les patients dont la VAF médiane (sur variants filtrés) "
+            "est inférieure au seuil sont isolés dans un groupe **« Suspect FFPE »** avant le clustering."
+        )
+        ts1, ts2 = st.columns(2)
+        with ts1:
+            vaf_threshold = st.number_input("Seuil VAF médiane (suspect FFPE)",
+                value=0.03, step=0.005, format="%.3f", key="vaf_thr",
+                help="Patients avec VAF médiane < seuil → exclus du clustering biologique")
+        with ts2:
+            min_variants_threshold = st.number_input("Nb variants min par patient",
+                value=5, step=1, key="min_var_thr",
+                help="Patients avec trop peu de variants → exclus (échecs techniques)")
+
+        # Identifier les suspects
+        patient_vaf_stats = df_clust.groupby("Pseudo").agg(
+            vaf_med=("Allelic_ratio", "median"),
+            n_var=("Variant", "count"),
+        )
+        suspect_ffpe = patient_vaf_stats[patient_vaf_stats["vaf_med"] < vaf_threshold].index.tolist()
+        too_few = patient_vaf_stats[patient_vaf_stats["n_var"] < min_variants_threshold].index.tolist()
+        excluded_patients = list(set(suspect_ffpe + too_few))
+        reliable_patients = [p for p in df_clust["Pseudo"].unique() if p not in excluded_patients]
+
+        ec1, ec2, ec3 = st.columns(3)
+        ec1.metric("Patients fiables", len(reliable_patients))
+        ec2.metric("Suspects FFPE", len(suspect_ffpe))
+        ec3.metric("Trop peu de variants", len(too_few))
+
+        if suspect_ffpe:
+            with st.expander(f"⚠️ {len(excluded_patients)} patients exclus du clustering biologique"):
+                for p in sorted(excluded_patients):
+                    stats = patient_vaf_stats.loc[p]
+                    reasons = []
+                    if p in suspect_ffpe: reasons.append(f"VAF médiane={stats['vaf_med']:.3f}")
+                    if p in too_few: reasons.append(f"N variants={int(stats['n_var'])}")
+                    st.markdown(f"- **{p}** : {', '.join(reasons)}")
+
+        df_clust_bio = df_clust[df_clust["Pseudo"].isin(reliable_patients)].copy()
+
+        if len(reliable_patients) < 5:
+            st.error("< 5 patients fiables. Abaissez le seuil VAF."); st.stop()
+    else:
+        df_clust_bio = df_clust.copy()
+        excluded_patients = []
+
     cp1, cp2, cp3, cp4 = st.columns(4)
     with cp1: use_gen = st.checkbox("Génomique", True)
     with cp2: use_clin = st.checkbox("Clinique", True)
@@ -1096,7 +1166,7 @@ with tab_clust:
 
     cc1, cc2 = st.columns(2)
     with cc1: method = st.selectbox("Méthode", ["Hiérarchique (Ward)", "K-Means"])
-    with cc2: n_clust = st.slider("Nb clusters", 2, 8, 3)
+    with cc2: n_clust = st.slider("Nb clusters", 2, 8, 5)
 
     cu1, cu2 = st.columns(2)
     with cu1: n_neigh = st.slider("UMAP n_neighbors", 3, 30, 10)
@@ -1107,7 +1177,7 @@ with tab_clust:
 
     # ── BUILD & CLUSTER ──
     with st.spinner("Construction matrice..."):
-        df_feat = build_patient_features(df_clust, use_gen, use_clin,
+        df_feat = build_patient_features(df_clust_bio, use_gen, use_clin,
             use_pathways=use_pw and pathways_dict is not None,
             top_n_genes=top_n, pathways_dict=pathways_dict)
 
@@ -1117,6 +1187,7 @@ with tab_clust:
     with st.expander("📋 Détail des features utilisées"):
         feat_types = {"Génomique (proportions)": [c for c in df_feat.columns if c.startswith("pct_")],
                       "Génomique (scores)": [c for c in df_feat.columns if c.startswith("impact_score") or c.startswith("median_") or c.startswith("mean_") or c == "n_unique_genes"],
+                      "VAF / Clonalité": [c for c in df_feat.columns if c.startswith("vaf_") or c.startswith("pct_clonal") or c.startswith("pct_subclonal") or c.startswith("pct_minor") or c in ["clonal_ratio", "tmb_score"]],
                       "Gènes (binaire)": [c for c in df_feat.columns if c.startswith("gene_")],
                       "Gènes (score impact)": [c for c in df_feat.columns if c.startswith("genescore_")],
                       "Pathways (%)": [c for c in df_feat.columns if c.startswith("pw_pct_")],
@@ -1147,9 +1218,18 @@ with tab_clust:
     for col in df_feat.columns:
         if (col.startswith("pct_") or col.startswith("median_") or col.startswith("mean_")
             or col.startswith("impact_score") or col.startswith("pw_pct_")
-            or col in ["n_unique_genes", "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
-                       "Recidive", "BO", "PNP", "MG", "FDSCS"]):
+            or col.startswith("vaf_") or col.startswith("tmb_")
+            or col in ["n_unique_genes", "clonal_ratio", "Histo_HV", "Histo_mixed",
+                       "Complication", "Chirurgie", "Recidive", "BO", "PNP", "MG", "FDSCS"]):
             df_u[col] = df_feat[col].values
+
+    # Add excluded patients as "Suspect FFPE" cluster if two-step mode
+    if two_step and excluded_patients:
+        for pat in excluded_patients:
+            df_u = pd.concat([df_u, pd.DataFrame([{
+                "UMAP_1": np.nan, "UMAP_2": np.nan,
+                "Cluster": "⚠️ Suspect FFPE", "Patient": pat,
+            }])], ignore_index=True)
 
     ccols = px.colors.qualitative.Bold[:n_clust]
     st.markdown("---")
@@ -1159,6 +1239,7 @@ with tab_clust:
     # ── UMAP ──
     st.markdown("### Projection UMAP")
     hover_extra = [c for c in ["pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS",
+                               "vaf_median", "pct_clonal", "tmb_score",
                                "impact_score_mean", "n_unique_genes"] if c in df_u.columns]
     fig = px.scatter(df_u, x="UMAP_1", y="UMAP_2", color="Cluster", text="Patient",
         hover_data=["Patient", "Cluster"] + hover_extra, color_discrete_sequence=ccols)
@@ -1187,7 +1268,9 @@ with tab_clust:
         "pct_impact_high", "pct_impact_moderate", "pct_impact_low",
         "pct_missensevariant", "pct_frameshiftvariant", "pct_stopgained",
         "impact_score_mean", "impact_score_max", "pct_high_impact_score",
-        "median_CADD", "median_AR", "mean_gnomAD_AF", "n_unique_genes"]]
+        "median_CADD", "mean_gnomAD_AF", "n_unique_genes",
+        "vaf_median", "vaf_mean", "vaf_iqr", "pct_clonal", "pct_subclonal",
+        "pct_minor", "clonal_ratio", "tmb_score"]]
     key_clin = [c for c in df_fc.columns if c in [
         "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
         "Recidive", "BO", "PNP", "MG", "FDSCS"]]
@@ -1245,7 +1328,7 @@ with tab_clust:
     if key_feat:
         interpretations = compute_cluster_interpretation(df_feat, cluster_labels, key_feat)
         labels_map = {cid: interp["patients"] for cid, interp in interpretations.items()}
-        gene_sigs = get_gene_signature_per_cluster(df_clust, labels_map)
+        gene_sigs = get_gene_signature_per_cluster(df_clust_bio, labels_map)
 
         st.markdown("### 📊 Interprétation statistique")
         for cid in sorted(interpretations.keys()):
