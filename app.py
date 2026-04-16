@@ -761,9 +761,9 @@ df_f = df_f[
 # ─────────────────────────────────────────────
 # ONGLETS
 # ─────────────────────────────────────────────
-tab_ov, tab_var, tab_pat, tab_gene, tab_acmg, tab_vaf, tab_coocc, tab_clust = st.tabs(
+tab_ov, tab_var, tab_pat, tab_gene, tab_acmg, tab_vaf, tab_coocc, tab_compl, tab_clust = st.tabs(
     ["📊 Vue d'ensemble", "🔎 Variants", "👤 Patient", "🧬 Gène", "🏷️ ACMG",
-     "📈 VAF & Clonalité", "🔗 Co-occurrence", "🔬 Clustering"]
+     "📈 VAF & Clonalité", "🔗 Co-occurrence", "🎯 Complications", "🔬 Clustering"]
 )
 
 # ═══════ VUE D'ENSEMBLE ═══════
@@ -1326,6 +1326,557 @@ with tab_coocc:
             st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("Pas assez de données après filtrage.")
+
+# ═══════════════════════════════════════════════════════
+# ANALYSE DES COMPLICATIONS (supervisée)
+# ═══════════════════════════════════════════════════════
+with tab_compl:
+    st.markdown("## 🎯 Analyse des complications")
+    st.markdown(
+        "Analyse **supervisée** : existe-t-il une signature génomique particulière associée à "
+        "l'apparition d'une complication (BO, PNP, MG, ou FDSCS) ? "
+        "L'analyse se fait à deux niveaux : par **variant** (peu de signal attendu) et par **gène muté**."
+    )
+
+    # ── DÉFINITION DU GROUPE "COMPLIQUÉ" ──
+    COMPLICATION_COLS = ["BO", "PNP", "MG", "FDSCS"]
+    CLINICAL_ALL_COLS = ["Complication", "Chirurgie", "Recidive", "BO", "PNP", "MG",
+                         "FDSCS", "Histo UCD", "Auto Ac"]
+
+    avail_compl = [c for c in COMPLICATION_COLS if c in df_f.columns]
+    avail_clin_all = [c for c in CLINICAL_ALL_COLS if c in df_f.columns]
+
+    if len(avail_compl) == 0:
+        st.error("Aucune colonne de complication trouvée (BO, PNP, MG, FDSCS).")
+        st.stop()
+
+    # Construction de la variable "Complication_any" par patient
+    patient_clinical = {}
+    for pseudo in df_f["Pseudo"].unique():
+        dp = df_f[df_f["Pseudo"] == pseudo]
+        # Dict des valeurs cliniques pour ce patient (prend la 1ère non-NaN)
+        pat_data = {}
+        has_any_clinical = False
+        for col in avail_clin_all:
+            vals = dp[col].dropna().unique()
+            if len(vals) > 0:
+                pat_data[col] = vals[0]
+                has_any_clinical = True
+            else:
+                pat_data[col] = None
+
+        # Complication_any : au moins une des 4 complications pures à 1
+        has_compl = False
+        for col in avail_compl:
+            try:
+                if pat_data.get(col) is not None and float(pat_data[col]) == 1:
+                    has_compl = True
+                    break
+            except (ValueError, TypeError):
+                pass
+        pat_data["Complication_any"] = 1 if has_compl else 0
+        pat_data["Has_clinical_info"] = has_any_clinical
+
+        patient_clinical[pseudo] = pat_data
+
+    df_pat_clin = pd.DataFrame.from_dict(patient_clinical, orient="index")
+
+    # ── FILTRES & PARAMÈTRES ──
+    st.markdown("### ⚙️ Paramètres de l'analyse")
+
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        exclude_no_clinical = st.checkbox(
+            "Exclure patients sans données cliniques", value=True,
+            help="Exclut les patients pour lesquels toutes les colonnes cliniques sont vides."
+        )
+    with fc2:
+        min_carriers = st.number_input(
+            "Nb minimum de patients porteurs", value=2, min_value=2, step=1,
+            help="Variant/gène testé seulement s'il est présent chez au moins N patients."
+        )
+    with fc3:
+        correction_method = st.selectbox(
+            "Correction multi-tests",
+            ["Bonferroni", "FDR (Benjamini-Hochberg)", "Aucune (p brute)"],
+            help="Bonferroni : strict. FDR : plus permissif, adapté à l'exploration.",
+        )
+
+    st.markdown("**Filtres qualité des variants (identiques aux filtres globaux)**")
+    st.markdown(
+        f"> Profondeur ≥ {depth_min} | AR ≥ {ar_range[0]:.2f} | gnomAD NFE ≤ {af_max:.3f} | "
+        f"Variants non fonctionnels exclus"
+    )
+
+    excl_nf_compl = st.checkbox("Exclure variants non fonctionnels (synonymes, UTR, introniques)",
+                                 value=True, key="compl_nf")
+
+    # ── CONSTRUCTION DE LA COHORTE ──
+    # Patients à analyser
+    if exclude_no_clinical:
+        eligible_patients = df_pat_clin[df_pat_clin["Has_clinical_info"]].index.tolist()
+    else:
+        eligible_patients = df_pat_clin.index.tolist()
+
+    df_c = df_f[df_f["Pseudo"].isin(eligible_patients)].copy()
+    if excl_nf_compl:
+        df_c = df_c[~df_c["Variant_effect"].isin(NON_FUNCTIONAL_EFFECTS)]
+
+    # ── MÉTRIQUES COHORTE ──
+    st.markdown("---")
+    st.markdown("### 👥 Cohorte analysée")
+
+    df_pat_elig = df_pat_clin.loc[eligible_patients]
+    n_elig = len(df_pat_elig)
+    n_compl = int(df_pat_elig["Complication_any"].sum())
+    n_no_compl = n_elig - n_compl
+    n_excluded = len(df_pat_clin) - n_elig
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Patients éligibles", n_elig)
+    mc2.metric("Avec complication", n_compl)
+    mc3.metric("Sans complication", n_no_compl)
+    mc4.metric("Exclus (pas de clinique)", n_excluded)
+
+    if exclude_no_clinical and n_excluded > 0:
+        excluded_list = df_pat_clin[~df_pat_clin["Has_clinical_info"]].index.tolist()
+        with st.expander(f"⚠️ {n_excluded} patients exclus (aucune info clinique)"):
+            st.markdown(", ".join(sorted(excluded_list)))
+
+    # ── DÉTAIL DES COMPLICATIONS ──
+    st.markdown("### Répartition des complications")
+    compl_counts = {}
+    for col in avail_compl:
+        try:
+            compl_counts[col] = int(df_pat_elig[col].fillna(0).astype(float).eq(1).sum())
+        except:
+            compl_counts[col] = 0
+
+    cc1, cc2 = st.columns([2, 1])
+    with cc1:
+        fig = go.Figure(go.Bar(
+            x=list(compl_counts.keys()), y=list(compl_counts.values()),
+            marker_color=["#ff6b6b", "#ffa500", "#ffd93d", "#9b59b6"][:len(compl_counts)],
+            text=list(compl_counts.values()), textposition="outside",
+        ))
+        fig.update_layout(title="Nombre de patients par type de complication",
+            template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)", height=350,
+            yaxis_title="Patients")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with cc2:
+        fig = go.Figure(go.Pie(
+            labels=["Compliqué", "Non compliqué"],
+            values=[n_compl, n_no_compl],
+            marker_colors=["#ff6b6b", "#4ecdc4"],
+            hole=0.4, textinfo="label+percent+value",
+        ))
+        fig.update_layout(title="Compliqué vs Non compliqué",
+            template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)", height=350)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── VALIDATION PRÉ-ANALYSE ──
+    if n_elig < 5:
+        st.error("Moins de 5 patients éligibles. Analyse impossible.")
+        st.stop()
+    if n_compl == 0 or n_no_compl == 0:
+        st.error("Tous les patients sont dans le même groupe — pas de comparaison possible.")
+        st.stop()
+    if n_compl < 3 or n_no_compl < 3:
+        st.warning("⚠️ Très peu de patients dans un des groupes. La puissance statistique sera faible.")
+
+    # ── FONCTION D'ANALYSE PAR ENTITÉ ──
+    def run_association_test(df_variants, df_clinical, entity_col, min_carriers, filter_acmg=None):
+        """
+        Test d'association entre la présence d'une entité (variant ou gène muté)
+        et la variable Complication_any via Fisher exact.
+        """
+        df_test = df_variants.copy()
+        if filter_acmg is not None:
+            df_test = df_test[df_test["ACMG_class"].isin(filter_acmg)]
+
+        # Matrice binaire patient × entité
+        entity_by_patient = df_test.groupby("Pseudo")[entity_col].apply(set)
+        all_entities = set()
+        for s in entity_by_patient: all_entities.update(s)
+
+        # Comptage porteurs
+        entity_carrier_count = df_test.groupby(entity_col)["Pseudo"].nunique()
+        frequent_entities = entity_carrier_count[entity_carrier_count >= min_carriers].index.tolist()
+
+        results = []
+        patients = df_clinical.index.tolist()
+        compl_set = set(df_clinical[df_clinical["Complication_any"] == 1].index)
+
+        for ent in frequent_entities:
+            # Liste des porteurs présents dans la cohorte clinique
+            carriers = set(df_test[df_test[entity_col] == ent]["Pseudo"].unique()) & set(patients)
+            non_carriers = set(patients) - carriers
+
+            a = len(carriers & compl_set)          # porteur & compliqué
+            b = len(carriers - compl_set)          # porteur & non compliqué
+            c = len(non_carriers & compl_set)      # non porteur & compliqué
+            d = len(non_carriers - compl_set)      # non porteur & non compliqué
+
+            if a + b == 0 or c + d == 0:
+                continue  # entité inutile
+
+            table = [[a, b], [c, d]]
+            try:
+                or_val, p_val = fisher_exact(table, alternative="two-sided")
+            except:
+                or_val, p_val = 1.0, 1.0
+
+            results.append({
+                "Entity": ent,
+                "N_carriers": a + b,
+                "Carriers_with_compl": a,
+                "Carriers_without_compl": b,
+                "Non_carriers_with_compl": c,
+                "Non_carriers_without_compl": d,
+                "Freq_compl_carriers": a / max(a + b, 1),
+                "Freq_compl_non_carriers": c / max(c + d, 1),
+                "Odds_Ratio": or_val,
+                "P_value": p_val,
+                "Direction": "Enrichi chez compliqués" if or_val > 1 else "Déplété chez compliqués",
+            })
+
+        if len(results) == 0:
+            return pd.DataFrame()
+
+        df_res = pd.DataFrame(results).sort_values("P_value")
+
+        # Correction multi-tests
+        n_tests = len(df_res)
+        if correction_method == "Bonferroni":
+            df_res["P_adjusted"] = (df_res["P_value"] * n_tests).clip(upper=1.0)
+        elif correction_method == "FDR (Benjamini-Hochberg)":
+            # BH : rank * p / (n_tests * (rank / n_tests)) = p * n_tests / rank
+            df_res_sorted = df_res.sort_values("P_value").reset_index(drop=True)
+            df_res_sorted["rank"] = df_res_sorted.index + 1
+            df_res_sorted["P_adjusted"] = (df_res_sorted["P_value"] * n_tests / df_res_sorted["rank"]).clip(upper=1.0)
+            # Garantir monotonie (BH step-up)
+            p_adj = df_res_sorted["P_adjusted"].values
+            for i in range(len(p_adj) - 2, -1, -1):
+                p_adj[i] = min(p_adj[i], p_adj[i + 1])
+            df_res_sorted["P_adjusted"] = p_adj
+            df_res_sorted = df_res_sorted.drop(columns="rank")
+            df_res = df_res_sorted.sort_values("P_value").reset_index(drop=True)
+        else:
+            df_res["P_adjusted"] = df_res["P_value"]
+
+        return df_res
+
+
+    # ═════════════════════════════════════════════════════
+    # LANCEMENT DE L'ANALYSE
+    # ═════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("## 🧪 Résultats de l'analyse d'association")
+
+    # Deux sous-onglets pour les 2 niveaux
+    lvl_var, lvl_gene = st.tabs(["📍 Niveau variant", "🧬 Niveau gène (Patho/LP/VUS)"])
+
+    # ─── NIVEAU VARIANT ───
+    with lvl_var:
+        st.markdown("### Association par variant")
+        st.markdown(
+            "Pour chaque variant présent chez au moins 2 patients, on teste si sa présence "
+            "est associée au statut complication (test de Fisher exact)."
+        )
+
+        with st.spinner("Analyse variant par variant..."):
+            df_res_var = run_association_test(df_c, df_pat_elig, "Variant", min_carriers)
+
+        st.markdown(f"**{len(df_res_var)} variants testés** (présents chez ≥{min_carriers} patients)")
+
+        if len(df_res_var) == 0:
+            st.warning("Aucun variant n'est présent chez suffisamment de patients pour être testé. "
+                      "Abaissez le seuil de porteurs minimum ou élargissez la cohorte.")
+        else:
+            # Significativité
+            sig_var = df_res_var[df_res_var["P_adjusted"] < 0.05]
+            nominal_sig_var = df_res_var[df_res_var["P_value"] < 0.05]
+
+            # MESSAGE INTERPRÉTATIF
+            st.markdown("### 📋 Conclusion statistique")
+            if len(sig_var) > 0:
+                st.success(
+                    f"✅ **{len(sig_var)} variant(s) significativement associé(s) à la complication** "
+                    f"après correction {correction_method} (p ajustée < 0.05). "
+                    f"Ces variants pourraient constituer des biomarqueurs candidats, "
+                    f"mais une validation sur une cohorte indépendante est nécessaire."
+                )
+            elif len(nominal_sig_var) > 0:
+                st.warning(
+                    f"⚠️ **Aucun variant significatif après correction {correction_method}** "
+                    f"(p ajustée < 0.05). Toutefois, {len(nominal_sig_var)} variant(s) présentent une "
+                    f"p-value brute < 0.05, suggérant des signaux à explorer mais non concluants. "
+                    f"Cela est attendu avec une petite cohorte et beaucoup de tests multiples. "
+                    f"Envisagez d'augmenter l'échantillon ou d'utiliser une correction FDR moins stricte."
+                )
+            else:
+                st.info(
+                    "ℹ️ **Aucun variant n'est associé à la complication**, même avant correction. "
+                    "Résultat attendu : il est rare que plusieurs patients partagent exactement le même "
+                    "variant. L'analyse par gène est plus appropriée pour ce type de cohorte."
+                )
+
+            # VOLCANO PLOT
+            st.markdown("### 📊 Volcano plot")
+            df_res_var["log2_OR"] = np.log2(df_res_var["Odds_Ratio"].clip(lower=0.01, upper=100))
+            df_res_var["log10_p"] = -np.log10(df_res_var["P_adjusted"].clip(lower=1e-10))
+            df_res_var["Significant"] = df_res_var["P_adjusted"] < 0.05
+
+            fig = px.scatter(
+                df_res_var, x="log2_OR", y="log10_p",
+                color="Significant",
+                color_discrete_map={True: "#ff6b6b", False: "#555555"},
+                hover_data=["Entity", "N_carriers", "Carriers_with_compl",
+                            "Odds_Ratio", "P_value", "P_adjusted"],
+                opacity=0.7,
+            )
+            fig.add_vline(x=0, line_dash="dash", line_color="#888", opacity=0.5)
+            fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="#ffd93d", opacity=0.5,
+                          annotation_text="p ajustée = 0.05")
+            fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)", height=500,
+                xaxis_title="log2(Odds Ratio) ← Déplété | Enrichi →",
+                yaxis_title="-log10(P ajustée)")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # TOP HITS TABLE
+            st.markdown("### 🔝 Top variants associés")
+            display_cols = ["Entity", "N_carriers", "Carriers_with_compl", "Carriers_without_compl",
+                           "Freq_compl_carriers", "Freq_compl_non_carriers",
+                           "Odds_Ratio", "P_value", "P_adjusted", "Direction"]
+            st.dataframe(
+                df_res_var[display_cols].head(30).reset_index(drop=True),
+                use_container_width=True,
+                column_config={
+                    "Freq_compl_carriers": st.column_config.NumberColumn("Fréq compl. chez porteurs", format="%.2f"),
+                    "Freq_compl_non_carriers": st.column_config.NumberColumn("Fréq compl. chez non-porteurs", format="%.2f"),
+                    "Odds_Ratio": st.column_config.NumberColumn("OR", format="%.2f"),
+                    "P_value": st.column_config.NumberColumn("P brute", format="%.4f"),
+                    "P_adjusted": st.column_config.NumberColumn("P ajustée", format="%.4f"),
+                })
+
+            # Export
+            csv_var = df_res_var.to_csv(index=False, sep=";")
+            st.download_button("📥 Résultats variants (CSV)", csv_var,
+                              "association_variants.csv", "text/csv", key="dl_var")
+
+    # ─── NIVEAU GÈNE ───
+    with lvl_gene:
+        st.markdown("### Association par gène")
+        st.markdown(
+            "Pour chaque gène muté chez au moins 2 patients, on teste si la présence d'une mutation "
+            "(classée **Pathogenic, Likely Pathogenic ou VUS**, Benign/LB exclus) est associée au "
+            "statut complication. Un variant bénin ne compte pas comme 'gène muté'."
+        )
+
+        # Filtre ACMG automatique : Patho + LP + VUS seulement
+        acmg_filter = ["Pathogenic", "Likely Pathogenic", "VUS"]
+        st.markdown(f"**Classes ACMG incluses** : {', '.join(acmg_filter)}")
+
+        with st.spinner("Analyse gène par gène..."):
+            df_res_gene = run_association_test(
+                df_c, df_pat_elig, "Gene_symbol", min_carriers,
+                filter_acmg=acmg_filter
+            )
+
+        st.markdown(f"**{len(df_res_gene)} gènes testés** (mutés chez ≥{min_carriers} patients)")
+
+        if len(df_res_gene) == 0:
+            st.warning("Aucun gène n'est muté chez suffisamment de patients pour être testé.")
+        else:
+            sig_gene = df_res_gene[df_res_gene["P_adjusted"] < 0.05]
+            nominal_sig_gene = df_res_gene[df_res_gene["P_value"] < 0.05]
+
+            # MESSAGE INTERPRÉTATIF
+            st.markdown("### 📋 Conclusion statistique")
+            if len(sig_gene) > 0:
+                top_genes = sig_gene.head(5)["Entity"].tolist()
+                st.success(
+                    f"✅ **{len(sig_gene)} gène(s) significativement associé(s) à la complication** "
+                    f"après correction {correction_method} (p ajustée < 0.05). "
+                    f"Top gènes : {', '.join(top_genes)}. "
+                    f"Ces gènes constituent des pistes biologiques intéressantes et méritent une "
+                    f"validation fonctionnelle ou une recherche de cibles thérapeutiques."
+                )
+            elif len(nominal_sig_gene) > 0:
+                top_nominal = nominal_sig_gene.head(5)["Entity"].tolist()
+                st.warning(
+                    f"⚠️ **Aucun gène significatif après correction {correction_method}** "
+                    f"(p ajustée < 0.05). En revanche, {len(nominal_sig_gene)} gène(s) ont une p-value "
+                    f"brute < 0.05 : {', '.join(top_nominal)}. "
+                    f"Ces signaux suggèrent des pistes exploratoires mais ne résistent pas au "
+                    f"contrôle des faux positifs dû aux tests multiples. "
+                    f"Avec {n_elig} patients analysés, la puissance statistique est limitée. "
+                    f"Essayez la correction FDR (moins stricte) pour identifier les signaux robustes."
+                )
+            else:
+                st.info(
+                    "ℹ️ **Aucun gène n'est associé à la complication**, même avant correction. "
+                    "Soit le signal n'existe pas à l'échelle individuelle du gène, soit la cohorte "
+                    "est trop petite pour le détecter. L'analyse par pathway (à venir) pourrait "
+                    "révéler des associations à un niveau fonctionnel plus large."
+                )
+
+            # VOLCANO PLOT
+            st.markdown("### 📊 Volcano plot")
+            df_res_gene["log2_OR"] = np.log2(df_res_gene["Odds_Ratio"].clip(lower=0.01, upper=100))
+            df_res_gene["log10_p"] = -np.log10(df_res_gene["P_adjusted"].clip(lower=1e-10))
+            df_res_gene["Significant"] = df_res_gene["P_adjusted"] < 0.05
+
+            fig = px.scatter(
+                df_res_gene, x="log2_OR", y="log10_p",
+                color="Significant",
+                color_discrete_map={True: "#ff6b6b", False: "#555555"},
+                hover_data=["Entity", "N_carriers", "Carriers_with_compl",
+                            "Odds_Ratio", "P_value", "P_adjusted"],
+                text=df_res_gene.apply(
+                    lambda r: r["Entity"] if r["P_adjusted"] < 0.1 or r.name < 10 else "", axis=1),
+                opacity=0.7,
+            )
+            fig.update_traces(textposition="top center", textfont_size=9)
+            fig.add_vline(x=0, line_dash="dash", line_color="#888", opacity=0.5)
+            fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="#ffd93d", opacity=0.5,
+                          annotation_text="p ajustée = 0.05")
+            fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)", height=550,
+                xaxis_title="log2(Odds Ratio) ← Déplété chez compliqués | Enrichi →",
+                yaxis_title="-log10(P ajustée)")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # TOP HITS TABLE
+            st.markdown("### 🔝 Top gènes associés")
+            display_cols = ["Entity", "N_carriers", "Carriers_with_compl", "Carriers_without_compl",
+                           "Freq_compl_carriers", "Freq_compl_non_carriers",
+                           "Odds_Ratio", "P_value", "P_adjusted", "Direction"]
+            st.dataframe(
+                df_res_gene[display_cols].head(30).reset_index(drop=True),
+                use_container_width=True,
+                column_config={
+                    "Entity": "Gène",
+                    "Freq_compl_carriers": st.column_config.NumberColumn("Fréq compl. chez mutés", format="%.2f"),
+                    "Freq_compl_non_carriers": st.column_config.NumberColumn("Fréq compl. chez non-mutés", format="%.2f"),
+                    "Odds_Ratio": st.column_config.NumberColumn("OR", format="%.2f"),
+                    "P_value": st.column_config.NumberColumn("P brute", format="%.4f"),
+                    "P_adjusted": st.column_config.NumberColumn("P ajustée", format="%.4f"),
+                })
+
+            # ONCOPRINT pour les top gènes
+            st.markdown("### 🧬 Oncoprint des top gènes annoté par statut complication")
+            n_onco_genes = min(20, len(df_res_gene))
+            top_onco_genes = df_res_gene.head(n_onco_genes)["Entity"].tolist()
+
+            # Matrice binaire patient × gène (avec filtre ACMG)
+            df_c_filtered = df_c[df_c["ACMG_class"].isin(acmg_filter)]
+            oncomat = pd.DataFrame(0, index=eligible_patients, columns=top_onco_genes)
+            for gene in top_onco_genes:
+                carriers = df_c_filtered[df_c_filtered["Gene_symbol"] == gene]["Pseudo"].unique()
+                for p in carriers:
+                    if p in oncomat.index:
+                        oncomat.loc[p, gene] = 1
+
+            # Trier patients : compliqués d'abord
+            pat_order = sorted(eligible_patients,
+                key=lambda p: (-int(df_pat_clin.loc[p, "Complication_any"]),
+                               -oncomat.loc[p].sum()))
+            oncomat = oncomat.loc[pat_order]
+
+            # Créer matrice colorée : 0=non muté, 1=muté sans compl, 2=muté avec compl
+            oncomat_colored = oncomat.copy().astype(int)
+            for p in pat_order:
+                if df_pat_clin.loc[p, "Complication_any"] == 1:
+                    oncomat_colored.loc[p] = oncomat.loc[p] * 2  # muté+compl = 2
+
+            # Annotation complication en ligne supplémentaire
+            fig = go.Figure()
+            fig.add_trace(go.Heatmap(
+                z=oncomat_colored.T.values,
+                x=oncomat.index,
+                y=oncomat.columns,
+                colorscale=[[0, "#0a192f"], [0.5, "#4ecdc4"], [1, "#ff6b6b"]],
+                zmin=0, zmax=2,
+                hovertemplate="Patient: %{x}<br>Gène: %{y}<br>Statut: %{z}<extra></extra>",
+                showscale=False,
+            ))
+            # Bande de statut complication en haut
+            compl_strip = [df_pat_clin.loc[p, "Complication_any"] for p in oncomat.index]
+
+            fig.update_layout(
+                title="Oncoprint : gènes (Patho/LP/VUS) × patients (triés par statut complication)",
+                template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                height=max(500, n_onco_genes * 22),
+                xaxis_tickangle=-90, margin=dict(l=150, b=120),
+                xaxis_title="Patient", yaxis_title="Gène",
+            )
+            # Légende personnalisée
+            fig.add_annotation(
+                x=1.02, y=1, xref="paper", yref="paper",
+                text="🟥 Muté + Compl. | 🟩 Muté sans Compl. | ⬛ Non muté",
+                showarrow=False, font=dict(size=10), xanchor="left",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Afficher le statut complication en-dessous
+            status_df = pd.DataFrame({
+                "Patient": oncomat.index,
+                "Complication": ["🔴 Oui" if df_pat_clin.loc[p, "Complication_any"] == 1 else "⚪ Non"
+                                 for p in oncomat.index],
+                "N gènes mutés (Patho/LP/VUS)": oncomat.sum(axis=1).values,
+            })
+            with st.expander("📋 Statut détaillé des patients"):
+                st.dataframe(status_df, use_container_width=True, hide_index=True)
+
+            # HEATMAP des gènes significatifs
+            if len(nominal_sig_gene) > 0:
+                st.markdown("### 🔥 Heatmap des gènes avec p brute < 0.05")
+                sig_genes_names = nominal_sig_gene.head(15)["Entity"].tolist()
+                hm_data = oncomat[sig_genes_names].T
+
+                fig = go.Figure(go.Heatmap(
+                    z=hm_data.values, x=hm_data.columns, y=hm_data.index,
+                    colorscale=[[0, "#0a192f"], [1, "#ff6b6b"]],
+                    showscale=False,
+                    hovertemplate="Patient: %{x}<br>Gène: %{y}<br>Muté: %{z}<extra></extra>",
+                ))
+                fig.update_layout(
+                    title=f"Gènes avec signal nominal × patients (colonnes triées par complication)",
+                    template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    height=max(400, len(sig_genes_names) * 25),
+                    xaxis_tickangle=-90, margin=dict(l=150, b=120),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Export
+            csv_gene = df_res_gene.to_csv(index=False, sep=";")
+            st.download_button("📥 Résultats gènes (CSV)", csv_gene,
+                              "association_genes.csv", "text/csv", key="dl_gene")
+
+    # ── SYNTHÈSE GLOBALE ──
+    st.markdown("---")
+    st.markdown("### 📝 Synthèse de l'analyse")
+    st.markdown(
+        f"""
+**Cohorte** : {n_elig} patients ({n_compl} compliqués, {n_no_compl} non compliqués)
+**Complications pures analysées** : {', '.join(avail_compl)}
+**Correction multi-tests** : {correction_method}
+**Filtres appliqués** : Profondeur ≥ {depth_min}, AR ≥ {ar_range[0]:.2f}, gnomAD NFE ≤ {af_max:.3f}
+**Patients exclus (sans info clinique)** : {n_excluded if exclude_no_clinical else 0}
+
+**Note méthodologique** : avec {n_elig} patients répartis en {n_compl}/{n_no_compl},
+la puissance statistique pour détecter des associations après correction multi-tests est limitée.
+Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être considérés comme
+**exploratoires** et nécessitent une validation sur une cohorte indépendante.
+        """
+    )
 
 # ═══════════════════════════════════════════════════════
 # CLUSTERING + PATHWAYS + INTERPRÉTATION
