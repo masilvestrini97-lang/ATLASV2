@@ -711,6 +711,431 @@ def generate_cluster_report(df_clust, df_feat, cluster_labels, interpretations,
     return buf.getvalue()
 
 
+
+
+def generate_complications_report(df_c, df_pat_elig, df_pat_clin,
+                                   df_res_var, df_res_gene,
+                                   n_elig, n_compl, n_no_compl, n_excluded,
+                                   compl_counts, avail_compl,
+                                   compl_depth, compl_ar, compl_af, compl_excl_ben,
+                                   excluded_effects_compl,
+                                   n_variants_base, n_variants_filtered, pct_kept,
+                                   min_carriers, correction_method,
+                                   exclude_no_clinical, excluded_list):
+    """Genere un rapport PDF complet de l'analyse des complications."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm, cm
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+                                     TableStyle, PageBreak, Image, HRFlowable)
+    import datetime
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+        topMargin=2*cm, bottomMargin=2*cm, leftMargin=2*cm, rightMargin=2*cm)
+
+    styles = getSampleStyleSheet()
+    # Helper: add style only if it doesn't exist
+    def add_style(name, **kwargs):
+        if name not in styles:
+            styles.add(ParagraphStyle(name=name, **kwargs))
+
+    add_style('CompMainTitle', parent=styles['Title'],
+        fontSize=22, spaceAfter=6, textColor=colors.HexColor("#1a1a2e"))
+    add_style('CompSubTitle', parent=styles['Normal'],
+        fontSize=12, textColor=colors.HexColor("#666666"), spaceAfter=20)
+    add_style('CompSection', parent=styles['Heading1'],
+        fontSize=16, textColor=colors.HexColor("#0f3460"), spaceBefore=16, spaceAfter=10)
+    add_style('CompSub', parent=styles['Heading2'],
+        fontSize=13, textColor=colors.HexColor("#16213e"), spaceBefore=12, spaceAfter=8)
+    add_style('CompBody', parent=styles['Normal'],
+        fontSize=9, leading=13, alignment=TA_JUSTIFY)
+    add_style('CompSmall', parent=styles['Normal'],
+        fontSize=8, leading=10, textColor=colors.HexColor("#555555"))
+    add_style('CompSuccess', parent=styles['Normal'],
+        fontSize=10, leading=14, textColor=colors.HexColor("#006600"),
+        backColor=colors.HexColor("#e6f7e6"), borderPadding=6, leftIndent=10, rightIndent=10,
+        spaceBefore=6, spaceAfter=6)
+    add_style('CompWarning', parent=styles['Normal'],
+        fontSize=10, leading=14, textColor=colors.HexColor("#b07700"),
+        backColor=colors.HexColor("#fff5e0"), borderPadding=6, leftIndent=10, rightIndent=10,
+        spaceBefore=6, spaceAfter=6)
+    add_style('CompInfo', parent=styles['Normal'],
+        fontSize=10, leading=14, textColor=colors.HexColor("#0a4466"),
+        backColor=colors.HexColor("#e0f0fa"), borderPadding=6, leftIndent=10, rightIndent=10,
+        spaceBefore=6, spaceAfter=6)
+
+    story = []
+
+    def make_table(data, col_widths=None, header_color="#0f3460", fontsize=8):
+        t = Table(data, colWidths=col_widths, repeatRows=1)
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(header_color)),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTSIZE', (0, 0), (-1, -1), fontsize),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        return t
+
+    def fig_to_image(fig, w=700, h=350, width_mm=170):
+        fig.update_layout(template="plotly_white", font_size=9,
+            margin=dict(l=60, r=30, t=40, b=50), width=w, height=h)
+        img_bytes = fig.to_image(format="png", scale=2)
+        img_buf = io.BytesIO(img_bytes)
+        return Image(img_buf, width=width_mm*mm, height=width_mm*mm * h/w)
+
+    # ========== PAGE 1 : TITRE + RESUME ==========
+    story.append(Spacer(1, 30))
+    story.append(Paragraph("Analyse des complications - Rapport", styles['CompMainTitle']))
+    story.append(Paragraph(f"Date : {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}",
+                           styles['CompSubTitle']))
+    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#0f3460")))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Question scientifique", styles['CompSection']))
+    story.append(Paragraph(
+        "Existe-t-il une signature genomique particuliere (au niveau du variant ou du gene) "
+        "associee a l'apparition d'une complication (BO, PNP, MG, FDSCS) chez les patients "
+        "de la cohorte ? Analyse supervisee par test exact de Fisher.",
+        styles['CompBody']))
+    story.append(Spacer(1, 12))
+
+    # Tableau recap
+    story.append(Paragraph("Resume de l'analyse", styles['CompSub']))
+    recap = [
+        ["Parametre", "Valeur"],
+        ["Patients eligibles", str(n_elig)],
+        ["Avec complication", str(n_compl)],
+        ["Sans complication", str(n_no_compl)],
+        ["Exclus (aucune info clinique)", str(n_excluded)],
+        ["Variants avant filtrage", f"{n_variants_base:,}"],
+        ["Variants apres filtrage", f"{n_variants_filtered:,}"],
+        ["Pourcentage conserve", f"{pct_kept:.1f}%"],
+        ["Seuil patients porteurs min", str(min_carriers)],
+        ["Correction multi-tests", correction_method],
+    ]
+    story.append(make_table(recap, col_widths=[180, 180]))
+    story.append(Spacer(1, 12))
+
+    # Filtres detailles
+    story.append(Paragraph("Filtres qualite appliques", styles['CompSub']))
+    filters_tbl = [
+        ["Filtre", "Valeur"],
+        ["Profondeur minimale (Depth)", f"≥ {compl_depth}"],
+        ["Ratio allelique minimum (AR)", f"≥ {compl_ar:.2f}"],
+        ["gnomAD NFE frequence max", f"≤ {compl_af:.3f}"],
+        ["Benign / Likely Benign", "Exclus" if compl_excl_ben else "Inclus"],
+        ["Types exclus", ", ".join(sorted(excluded_effects_compl)) if excluded_effects_compl else "Aucun"],
+        ["Patients sans info clinique", "Exclus" if exclude_no_clinical else "Inclus"],
+    ]
+    story.append(make_table(filters_tbl, col_widths=[200, 260]))
+
+    if exclude_no_clinical and n_excluded > 0 and excluded_list:
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(
+            f"<b>Patients exclus ({len(excluded_list)})</b> : {', '.join(sorted(excluded_list))}",
+            styles['CompSmall']))
+
+    # ========== PAGE 2 : REPARTITION DES COMPLICATIONS ==========
+    story.append(PageBreak())
+    story.append(Paragraph("Repartition des complications", styles['CompSection']))
+
+    # Tableau comptage
+    compl_tbl = [["Type de complication", "Nb patients", "% de la cohorte"]]
+    for col in avail_compl:
+        n = compl_counts.get(col, 0)
+        compl_tbl.append([col, str(n), f"{n/max(n_elig,1)*100:.1f}%"])
+    story.append(make_table(compl_tbl, col_widths=[150, 100, 150]))
+    story.append(Spacer(1, 10))
+
+    # Figure : bar chart
+    fig = go.Figure(go.Bar(
+        x=list(compl_counts.keys()), y=list(compl_counts.values()),
+        marker_color=["#ff6b6b", "#ffa500", "#ffd93d", "#9b59b6"][:len(compl_counts)],
+        text=list(compl_counts.values()), textposition="outside",
+    ))
+    fig.update_layout(title="Nombre de patients par type de complication",
+        yaxis_title="Patients")
+    try:
+        story.append(fig_to_image(fig, w=700, h=320))
+    except Exception as e:
+        story.append(Paragraph(f"[Erreur figure: {e}]", styles['CompSmall']))
+    story.append(Spacer(1, 8))
+
+    # Figure : pie chart compl vs non-compl
+    fig = go.Figure(go.Pie(
+        labels=["Complique", "Non complique"],
+        values=[n_compl, n_no_compl],
+        marker_colors=["#ff6b6b", "#4ecdc4"],
+        hole=0.4, textinfo="label+percent+value",
+    ))
+    fig.update_layout(title="Repartition compliques vs non compliques")
+    try:
+        story.append(fig_to_image(fig, w=500, h=350, width_mm=120))
+    except:
+        pass
+
+    # ========== PAGE 3+ : NIVEAU VARIANT ==========
+    story.append(PageBreak())
+    story.append(Paragraph("Analyse par variant", styles['CompSection']))
+
+    if df_res_var is None or len(df_res_var) == 0:
+        story.append(Paragraph(
+            "Aucun variant n'est present chez suffisamment de patients pour etre teste. "
+            "Abaissez le seuil de porteurs minimum ou elargissez la cohorte.",
+            styles['CompWarning']))
+    else:
+        sig_var = df_res_var[df_res_var["P_adjusted"] < 0.05]
+        nominal_sig_var = df_res_var[df_res_var["P_value"] < 0.05]
+
+        # Conclusion statistique
+        story.append(Paragraph("Conclusion statistique", styles['CompSub']))
+        if len(sig_var) > 0:
+            top_with_gene = sig_var.head(5).apply(
+                lambda r: f"{r.get('Gene', 'N/A')} ({r['Entity']})" if pd.notna(r.get('Gene')) else str(r['Entity']),
+                axis=1
+            ).tolist()
+            story.append(Paragraph(
+                f"<b>{len(sig_var)} variant(s) significativement associe(s)</b> a la complication "
+                f"apres correction {correction_method} (p ajustee < 0.05). "
+                f"Top : {', '.join(top_with_gene)}. Validation sur cohorte independante necessaire.",
+                styles['CompSuccess']))
+        elif len(nominal_sig_var) > 0:
+            story.append(Paragraph(
+                f"<b>Aucun variant significatif apres correction {correction_method}</b> "
+                f"(p ajustee &lt; 0.05). {len(nominal_sig_var)} variant(s) ont une p brute &lt; 0.05, "
+                f"suggerant des signaux exploratoires non concluants. "
+                f"Attendu avec une petite cohorte et beaucoup de tests multiples.",
+                styles['CompWarning']))
+        else:
+            story.append(Paragraph(
+                "<b>Aucun variant n'est associe</b> a la complication. "
+                "Resultat attendu : il est rare que plusieurs patients partagent exactement "
+                "le meme variant. L'analyse par gene est plus appropriee.",
+                styles['CompInfo']))
+
+        # Volcano plot variants
+        story.append(Spacer(1, 6))
+        story.append(Paragraph("Volcano plot", styles['CompSub']))
+        df_res_var_plot = df_res_var.copy()
+        df_res_var_plot["log2_OR"] = np.log2(df_res_var_plot["Odds_Ratio"].clip(lower=0.01, upper=100))
+        df_res_var_plot["log10_p"] = -np.log10(df_res_var_plot["P_adjusted"].clip(lower=1e-10))
+        df_res_var_plot["Significant"] = df_res_var_plot["P_adjusted"] < 0.05
+
+        fig = px.scatter(df_res_var_plot, x="log2_OR", y="log10_p",
+            color="Significant",
+            color_discrete_map={True: "#ff6b6b", False: "#555555"}, opacity=0.7)
+        fig.add_vline(x=0, line_dash="dash", line_color="#888")
+        fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="#ffd93d",
+                      annotation_text="p ajustee = 0.05")
+        fig.update_layout(
+            xaxis_title="log2(Odds Ratio)",
+            yaxis_title="-log10(P ajustee)")
+        try:
+            story.append(fig_to_image(fig, w=700, h=380))
+        except:
+            pass
+        story.append(Spacer(1, 8))
+
+        # Tableau top 20 variants
+        story.append(PageBreak())
+        story.append(Paragraph("Top 20 variants associes", styles['CompSub']))
+        gene_col = "Gene" if "Gene" in df_res_var.columns else ("Gène" if "Gène" in df_res_var.columns else None)
+        hgvs_col = "hgvs.p" if "hgvs.p" in df_res_var.columns else None
+        eff_col = "Variant_effect" if "Variant_effect" in df_res_var.columns else None
+
+        headers = ["Gene", "Variant", "HGVS p.", "Effet", "N port.", "Comp+", "Comp-", "OR", "P brute", "P adj."]
+        var_tbl = [headers]
+        for _, r in df_res_var.head(20).iterrows():
+            var_tbl.append([
+                str(r.get(gene_col, "-"))[:10] if gene_col else "-",
+                str(r["Entity"])[:18],
+                str(r.get(hgvs_col, "-") if hgvs_col else "-")[:14],
+                str(r.get(eff_col, "-") if eff_col else "-")[:12],
+                str(int(r["N_carriers"])),
+                str(int(r["Carriers_with_compl"])),
+                str(int(r["Carriers_without_compl"])),
+                f"{r['Odds_Ratio']:.2f}",
+                f"{r['P_value']:.4f}",
+                f"{r['P_adjusted']:.4f}",
+            ])
+        col_widths_var = [50, 85, 65, 55, 32, 32, 32, 32, 40, 40]
+        story.append(make_table(var_tbl, col_widths=col_widths_var, fontsize=7))
+
+    # ========== NIVEAU GENE ==========
+    story.append(PageBreak())
+    story.append(Paragraph("Analyse par gene (Pathogenic / LP / VUS)", styles['CompSection']))
+    story.append(Paragraph(
+        "Test sur les genes ou au moins une mutation Pathogenic, Likely Pathogenic ou VUS "
+        "est presente chez au moins N patients. Les variants Benign/LB sont exclus.",
+        styles['CompBody']))
+    story.append(Spacer(1, 6))
+
+    if df_res_gene is None or len(df_res_gene) == 0:
+        story.append(Paragraph(
+            "Aucun gene n'est mute chez suffisamment de patients pour etre teste.",
+            styles['CompWarning']))
+    else:
+        sig_gene = df_res_gene[df_res_gene["P_adjusted"] < 0.05]
+        nominal_sig_gene = df_res_gene[df_res_gene["P_value"] < 0.05]
+
+        story.append(Paragraph("Conclusion statistique", styles['CompSub']))
+        if len(sig_gene) > 0:
+            top_genes = sig_gene.head(5)["Entity"].tolist()
+            story.append(Paragraph(
+                f"<b>{len(sig_gene)} gene(s) significativement associe(s)</b> a la complication "
+                f"apres correction {correction_method} (p ajustee &lt; 0.05). "
+                f"Top genes : {', '.join(top_genes)}. "
+                f"Ces genes constituent des pistes biologiques interessantes.",
+                styles['CompSuccess']))
+        elif len(nominal_sig_gene) > 0:
+            top_nominal = nominal_sig_gene.head(5)["Entity"].tolist()
+            story.append(Paragraph(
+                f"<b>Aucun gene significatif apres correction {correction_method}</b> "
+                f"(p ajustee &lt; 0.05). {len(nominal_sig_gene)} gene(s) ont une p brute &lt; 0.05 : "
+                f"{', '.join(top_nominal)}. Signaux exploratoires a valider. "
+                f"Essayez la correction FDR (moins stricte).",
+                styles['CompWarning']))
+        else:
+            story.append(Paragraph(
+                "<b>Aucun gene n'est associe</b> a la complication, meme avant correction. "
+                "Soit le signal n'existe pas a l'echelle individuelle du gene, soit la cohorte "
+                "est trop petite. L'analyse par pathway pourrait reveler des associations.",
+                styles['CompInfo']))
+
+        # Volcano plot genes
+        story.append(Spacer(1, 6))
+        story.append(Paragraph("Volcano plot", styles['CompSub']))
+        df_res_gene_plot = df_res_gene.copy()
+        df_res_gene_plot["log2_OR"] = np.log2(df_res_gene_plot["Odds_Ratio"].clip(lower=0.01, upper=100))
+        df_res_gene_plot["log10_p"] = -np.log10(df_res_gene_plot["P_adjusted"].clip(lower=1e-10))
+        df_res_gene_plot["Significant"] = df_res_gene_plot["P_adjusted"] < 0.05
+        df_res_gene_plot["Label"] = df_res_gene_plot.apply(
+            lambda r: r["Entity"] if r["P_value"] < 0.1 else "", axis=1)
+
+        fig = px.scatter(df_res_gene_plot, x="log2_OR", y="log10_p",
+            color="Significant",
+            color_discrete_map={True: "#ff6b6b", False: "#555555"},
+            text="Label", opacity=0.7)
+        fig.update_traces(textposition="top center", textfont_size=8)
+        fig.add_vline(x=0, line_dash="dash", line_color="#888")
+        fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="#ffd93d",
+                      annotation_text="p ajustee = 0.05")
+        fig.update_layout(
+            xaxis_title="log2(Odds Ratio)",
+            yaxis_title="-log10(P ajustee)")
+        try:
+            story.append(fig_to_image(fig, w=700, h=400))
+        except:
+            pass
+
+        # Tableau top 20 genes
+        story.append(PageBreak())
+        story.append(Paragraph("Top 20 genes associes", styles['CompSub']))
+        gene_headers = ["Gene", "N port.", "Comp+", "Comp-",
+                        "Freq compl porteurs", "Freq compl non-port.",
+                        "OR", "P brute", "P ajust."]
+        gene_tbl = [gene_headers]
+        for _, r in df_res_gene.head(20).iterrows():
+            gene_tbl.append([
+                str(r["Entity"])[:15],
+                str(int(r["N_carriers"])),
+                str(int(r["Carriers_with_compl"])),
+                str(int(r["Carriers_without_compl"])),
+                f"{r['Freq_compl_carriers']:.2f}",
+                f"{r['Freq_compl_non_carriers']:.2f}",
+                f"{r['Odds_Ratio']:.2f}",
+                f"{r['P_value']:.4f}",
+                f"{r['P_adjusted']:.4f}",
+            ])
+        col_widths_gene = [70, 40, 40, 40, 70, 70, 40, 50, 50]
+        story.append(make_table(gene_tbl, col_widths=col_widths_gene, fontsize=7))
+
+    # ========== METHODOLOGIE ==========
+    story.append(PageBreak())
+    story.append(Paragraph("Methodologie et interpretation", styles['CompSection']))
+
+    story.append(Paragraph("Principe de l'analyse", styles['CompSub']))
+    story.append(Paragraph(
+        "Pour chaque variant (ou gene) present chez au moins N patients, un test exact de Fisher "
+        "est applique sur une table de contingence 2x2 croisant la presence du variant (porteur "
+        "oui/non) et le statut complication (Complication_any = 1 si au moins une des colonnes BO, "
+        "PNP, MG ou FDSCS est a 1). L'odds ratio (OR) mesure la force de l'association : OR &gt; 1 "
+        "= enrichissement chez les compliques, OR &lt; 1 = depletion.",
+        styles['CompBody']))
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph("Correction multi-tests", styles['CompSub']))
+    if correction_method == "Bonferroni":
+        corr_txt = ("Correction de Bonferroni : p ajustee = p brute * N tests. Methode stricte "
+                    "qui minimise les faux positifs mais reduit la puissance. Adaptee quand "
+                    "on cherche des signaux robustes.")
+    elif correction_method == "FDR (Benjamini-Hochberg)":
+        corr_txt = ("Correction FDR (Benjamini-Hochberg) : controle le taux de faux positifs "
+                    "attendu. Plus permissive que Bonferroni, adaptee a l'exploration quand on "
+                    "genere des hypotheses sur de nombreux tests.")
+    else:
+        corr_txt = ("Aucune correction appliquee. Les p-values sont brutes. A utiliser uniquement "
+                    "pour explorer des tendances ou sur un nombre tres limite de tests.")
+    story.append(Paragraph(corr_txt, styles['CompBody']))
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph("Limitations et puissance statistique", styles['CompSub']))
+    power_note = ""
+    if n_elig < 30:
+        power_note = ("<b>Cohorte tres petite ({} patients)</b> : la puissance statistique est "
+                     "fortement limitee. Les tests multiples apres correction peuvent ne rien "
+                     "retenir meme si des signaux biologiques existent.").format(n_elig)
+    elif n_elig < 50:
+        power_note = ("<b>Cohorte modeste ({} patients)</b> : puissance limitee pour les "
+                     "correction strictes. Envisagez une validation independante.").format(n_elig)
+    else:
+        power_note = ("Cohorte de taille acceptable ({} patients).").format(n_elig)
+
+    if n_compl < 5 or n_no_compl < 5:
+        power_note += (" <b>ATTENTION</b> : un des groupes contient moins de 5 patients "
+                      "(compliques={}, non-compliques={}), la puissance est critique.").format(n_compl, n_no_compl)
+
+    story.append(Paragraph(power_note, styles['CompBody']))
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph("Niveaux d'analyse", styles['CompSub']))
+    story.append(Paragraph(
+        "<b>Niveau variant</b> : identifie les variants exacts associes. Peu de signal attendu "
+        "car il est rare que plusieurs patients partagent exactement le meme variant dans un "
+        "contexte somatique FFPE.",
+        styles['CompBody']))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(
+        "<b>Niveau gene</b> : identifie les genes ou une mutation delertere (Patho/LP/VUS) est "
+        "enrichie chez les compliques. Plus sensible car il agrege les variants par gene. Les "
+        "variants Benign/Likely Benign sont exclus car ils diluent le signal.",
+        styles['CompBody']))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(
+        "<b>Niveau pathway</b> (a venir) : identifie les voies biologiques enrichies. Plus "
+        "sensible encore car agrege plusieurs genes d'une meme voie.",
+        styles['CompBody']))
+
+    story.append(Spacer(1, 12))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#cccccc")))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        f"Rapport genere par Variant Explorer v4.0 - {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}",
+        styles['CompSmall']))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ─────────────────────────────────────────────
 # HEADER & CHARGEMENT
 # ─────────────────────────────────────────────
@@ -1599,8 +2024,8 @@ with tab_compl:
             df_res_sorted = df_res.sort_values("P_value").reset_index(drop=True)
             df_res_sorted["rank"] = df_res_sorted.index + 1
             df_res_sorted["P_adjusted"] = (df_res_sorted["P_value"] * n_tests / df_res_sorted["rank"]).clip(upper=1.0)
-            # Garantir monotonie (BH step-up)
-            p_adj = df_res_sorted["P_adjusted"].values
+            # Garantir monotonie (BH step-up) — copie writable
+            p_adj = np.array(df_res_sorted["P_adjusted"].values, copy=True)
             for i in range(len(p_adj) - 2, -1, -1):
                 p_adj[i] = min(p_adj[i], p_adj[i + 1])
             df_res_sorted["P_adjusted"] = p_adj
@@ -1947,6 +2372,66 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
 **exploratoires** et nécessitent une validation sur une cohorte indépendante.
         """
     )
+
+    # ── EXPORT PDF ──
+    st.markdown("---")
+    st.markdown("### 📄 Export du rapport complet")
+    st.markdown(
+        "Génère un rapport PDF avec toutes les figures, tableaux et interprétations "
+        "de l'analyse en cours (cohorte, filtres, niveaux variant et gène, méthodologie)."
+    )
+
+    exp_c1, exp_c2 = st.columns(2)
+
+    with exp_c1:
+        if st.button("📊 Générer rapport PDF", type="primary", use_container_width=True,
+                     key="gen_compl_pdf"):
+            # Renommer la colonne "Gène" en "Gene" pour le rapport (évite les problèmes d'encodage)
+            df_res_var_report = df_res_var.copy() if 'df_res_var' in dir() and df_res_var is not None else None
+            if df_res_var_report is not None and "Gène" in df_res_var_report.columns:
+                df_res_var_report = df_res_var_report.rename(columns={"Gène": "Gene"})
+
+            df_res_gene_report = df_res_gene.copy() if 'df_res_gene' in dir() and df_res_gene is not None else None
+
+            excluded_list_report = []
+            if exclude_no_clinical and n_excluded > 0:
+                excluded_list_report = df_pat_clin[~df_pat_clin["Has_clinical_info"]].index.tolist()
+
+            with st.spinner("Génération du rapport PDF (peut prendre 30-60 secondes)..."):
+                try:
+                    pdf_bytes = generate_complications_report(
+                        df_c=df_c,
+                        df_pat_elig=df_pat_elig,
+                        df_pat_clin=df_pat_clin,
+                        df_res_var=df_res_var_report,
+                        df_res_gene=df_res_gene_report,
+                        n_elig=n_elig, n_compl=n_compl, n_no_compl=n_no_compl,
+                        n_excluded=n_excluded,
+                        compl_counts=compl_counts, avail_compl=avail_compl,
+                        compl_depth=compl_depth, compl_ar=compl_ar, compl_af=compl_af,
+                        compl_excl_ben=compl_excl_ben,
+                        excluded_effects_compl=excluded_effects_compl,
+                        n_variants_base=n_variants_base,
+                        n_variants_filtered=n_variants_filtered,
+                        pct_kept=pct_kept,
+                        min_carriers=min_carriers,
+                        correction_method=correction_method,
+                        exclude_no_clinical=exclude_no_clinical,
+                        excluded_list=excluded_list_report,
+                    )
+                    st.session_state["compl_pdf"] = pdf_bytes
+                    st.success("✅ Rapport généré !")
+                except Exception as e:
+                    st.error(f"Erreur : {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+    with exp_c2:
+        if "compl_pdf" in st.session_state:
+            st.download_button("📥 Télécharger le rapport PDF",
+                st.session_state["compl_pdf"],
+                "rapport_complications.pdf", "application/pdf",
+                use_container_width=True, key="dl_compl_pdf")
 
 # ═══════════════════════════════════════════════════════
 # CLUSTERING + PATHWAYS + INTERPRÉTATION
