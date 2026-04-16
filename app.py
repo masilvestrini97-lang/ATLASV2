@@ -1590,6 +1590,16 @@ with tab_compl:
         with st.spinner("Analyse variant par variant..."):
             df_res_var = run_association_test(df_c, df_pat_elig, "Variant", min_carriers)
 
+        # Enrichissement avec le nom du gène + info hgvs pour chaque variant
+        if len(df_res_var) > 0:
+            variant_gene_map = df_c.drop_duplicates("Variant").set_index("Variant")[
+                ["Gene_symbol", "hgvs.c", "hgvs.p", "Variant_effect", "ACMG_class"]
+            ]
+            df_res_var = df_res_var.merge(
+                variant_gene_map, left_on="Entity", right_index=True, how="left"
+            )
+            df_res_var = df_res_var.rename(columns={"Gene_symbol": "Gène"})
+
         st.markdown(f"**{len(df_res_var)} variants testés** (présents chez ≥{min_carriers} patients)")
 
         if len(df_res_var) == 0:
@@ -1603,9 +1613,14 @@ with tab_compl:
             # MESSAGE INTERPRÉTATIF
             st.markdown("### 📋 Conclusion statistique")
             if len(sig_var) > 0:
+                top_with_gene = sig_var.head(5).apply(
+                    lambda r: f"{r['Gène']} ({r['Entity']})" if pd.notna(r['Gène']) else r['Entity'],
+                    axis=1
+                ).tolist()
                 st.success(
                     f"✅ **{len(sig_var)} variant(s) significativement associé(s) à la complication** "
                     f"après correction {correction_method} (p ajustée < 0.05). "
+                    f"Top : {', '.join(top_with_gene)}. "
                     f"Ces variants pourraient constituer des biomarqueurs candidats, "
                     f"mais une validation sur une cohorte indépendante est nécessaire."
                 )
@@ -1629,12 +1644,18 @@ with tab_compl:
             df_res_var["log2_OR"] = np.log2(df_res_var["Odds_Ratio"].clip(lower=0.01, upper=100))
             df_res_var["log10_p"] = -np.log10(df_res_var["P_adjusted"].clip(lower=1e-10))
             df_res_var["Significant"] = df_res_var["P_adjusted"] < 0.05
+            # Label combiné gène + variant pour le hover
+            df_res_var["Label"] = df_res_var.apply(
+                lambda r: f"{r['Gène']} | {r['Entity']}" if pd.notna(r.get('Gène')) else r['Entity'],
+                axis=1
+            )
 
             fig = px.scatter(
                 df_res_var, x="log2_OR", y="log10_p",
                 color="Significant",
                 color_discrete_map={True: "#ff6b6b", False: "#555555"},
-                hover_data=["Entity", "N_carriers", "Carriers_with_compl",
+                hover_data=["Label", "Gène", "Entity", "hgvs.p", "Variant_effect",
+                            "N_carriers", "Carriers_with_compl",
                             "Odds_Ratio", "P_value", "P_adjusted"],
                 opacity=0.7,
             )
@@ -1649,13 +1670,19 @@ with tab_compl:
 
             # TOP HITS TABLE
             st.markdown("### 🔝 Top variants associés")
-            display_cols = ["Entity", "N_carriers", "Carriers_with_compl", "Carriers_without_compl",
+            display_cols = ["Gène", "Entity", "hgvs.p", "Variant_effect", "ACMG_class",
+                           "N_carriers", "Carriers_with_compl", "Carriers_without_compl",
                            "Freq_compl_carriers", "Freq_compl_non_carriers",
                            "Odds_Ratio", "P_value", "P_adjusted", "Direction"]
+            display_cols = [c for c in display_cols if c in df_res_var.columns]
             st.dataframe(
                 df_res_var[display_cols].head(30).reset_index(drop=True),
                 use_container_width=True,
                 column_config={
+                    "Entity": "Variant",
+                    "hgvs.p": "HGVS protéique",
+                    "Variant_effect": "Type",
+                    "ACMG_class": "ACMG",
                     "Freq_compl_carriers": st.column_config.NumberColumn("Fréq compl. chez porteurs", format="%.2f"),
                     "Freq_compl_non_carriers": st.column_config.NumberColumn("Fréq compl. chez non-porteurs", format="%.2f"),
                     "Odds_Ratio": st.column_config.NumberColumn("OR", format="%.2f"),
