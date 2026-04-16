@@ -2087,7 +2087,9 @@ with tab_compl:
     st.markdown("## 🧪 Résultats de l'analyse d'association")
 
     # Deux sous-onglets pour les 2 niveaux
-    lvl_var, lvl_gene = st.tabs(["📍 Niveau variant", "🧬 Niveau gène (Patho/LP/VUS)"])
+    lvl_var, lvl_gene, lvl_pw = st.tabs(
+        ["📍 Niveau variant", "🧬 Niveau gène (Patho/LP/VUS)", "🔬 Niveau pathway"]
+    )
 
     # ─── NIVEAU VARIANT ───
     with lvl_var:
@@ -2396,6 +2398,289 @@ with tab_compl:
             csv_gene = df_res_gene.to_csv(index=False, sep=";")
             st.download_button("📥 Résultats gènes (CSV)", csv_gene,
                               "association_genes.csv", "text/csv", key="dl_gene")
+
+    # ─── NIVEAU PATHWAY ───
+    with lvl_pw:
+        st.markdown("### Association par pathway")
+        st.markdown(
+            "Pour chaque pathway biologique (fichier GMT), on teste si le fait d'avoir **au moins un "
+            "gène du pathway muté** (Patho/LP/VUS) est associé au statut complication. "
+            "Cette approche agrège le signal au niveau fonctionnel : plusieurs gènes d'une même voie "
+            "biologique peuvent converger vers un phénotype commun, même si aucun gène individuel "
+            "n'atteint la significativité."
+        )
+
+        if pathways_dict is None:
+            st.warning(
+                "⚠️ **Aucun fichier GMT n'a été chargé.** "
+                "Pour activer l'analyse par pathway, chargez un fichier `.gmt` (ex: MSigDB) "
+                "dans la barre latérale. Vous pouvez télécharger des fichiers GMT depuis "
+                "[MSigDB](https://www.gsea-msigdb.org/gsea/msigdb/)."
+            )
+        else:
+            # Filtrage des pathways pertinents (au moins N gènes du panel)
+            st.markdown("### Paramètres spécifiques aux pathways")
+            pwc1, pwc2 = st.columns(2)
+            with pwc1:
+                min_genes_in_panel = st.number_input(
+                    "Gènes min du pathway dans le panel", value=3, min_value=2, step=1,
+                    help="Un pathway doit contenir au moins N gènes couverts par le panel "
+                         "de séquençage pour être testé. Évite les pathways non pertinents."
+                )
+            with pwc2:
+                max_pathways = st.number_input(
+                    "Nombre max de pathways à tester", value=500, min_value=50, step=50,
+                    help="Les pathways sont triés par nombre de gènes du panel (les plus couverts "
+                         "en premier). Limiter le nombre de tests réduit la pénalité de correction "
+                         "multi-tests."
+                )
+
+            panel_genes = set(df_c["Gene_symbol"].unique())
+            relevant_pw = {k: v & panel_genes for k, v in pathways_dict.items()
+                          if len(v & panel_genes) >= min_genes_in_panel}
+            # Trier par couverture décroissante
+            relevant_pw = dict(sorted(relevant_pw.items(),
+                key=lambda x: len(x[1]), reverse=True)[:max_pathways])
+
+            st.markdown(f"**{len(relevant_pw)} pathways** retenus (≥{min_genes_in_panel} gènes du panel)")
+
+            if len(relevant_pw) == 0:
+                st.warning("Aucun pathway ne contient assez de gènes du panel.")
+            else:
+                # ── CONSTRUCTION DE LA MATRICE PATIENT × PATHWAY ──
+                acmg_filter_pw = ["Pathogenic", "Likely Pathogenic", "VUS"]
+                df_c_pw = df_c[df_c["ACMG_class"].isin(acmg_filter_pw)]
+
+                with st.spinner(f"Test de Fisher sur {len(relevant_pw)} pathways..."):
+                    results_pw = []
+                    compl_set = set(df_pat_elig[df_pat_elig["Complication_any"] == 1].index)
+
+                    # Gènes mutés (avec filtre ACMG) par patient
+                    muted_genes_by_patient = df_c_pw.groupby("Pseudo")["Gene_symbol"].apply(set)
+
+                    for pw_name, pw_genes in relevant_pw.items():
+                        # Patients "porteurs" : au moins un gène du pathway muté
+                        carriers = set()
+                        for pseudo in eligible_patients:
+                            if pseudo in muted_genes_by_patient.index:
+                                pat_muted = muted_genes_by_patient.loc[pseudo]
+                                if len(pat_muted & pw_genes) > 0:
+                                    carriers.add(pseudo)
+
+                        non_carriers = set(eligible_patients) - carriers
+
+                        a = len(carriers & compl_set)
+                        b = len(carriers - compl_set)
+                        c = len(non_carriers & compl_set)
+                        d = len(non_carriers - compl_set)
+
+                        # Filtre : pathway doit avoir au moins N porteurs
+                        if a + b < min_carriers:
+                            continue
+                        if c + d == 0:
+                            continue
+
+                        table = [[a, b], [c, d]]
+                        try:
+                            or_val, p_val = fisher_exact(table, alternative="two-sided")
+                        except:
+                            or_val, p_val = 1.0, 1.0
+
+                        # Liste des gènes mutés du pathway (pour détail)
+                        muted_in_pw = set()
+                        for pseudo in carriers:
+                            muted_in_pw.update(muted_genes_by_patient.loc[pseudo] & pw_genes)
+
+                        results_pw.append({
+                            "Pathway": pw_name,
+                            "N_genes_pw": len(pw_genes),
+                            "Muted_genes_in_cohort": ", ".join(sorted(muted_in_pw)[:8]) +
+                                ("..." if len(muted_in_pw) > 8 else ""),
+                            "N_carriers": a + b,
+                            "Carriers_with_compl": a,
+                            "Carriers_without_compl": b,
+                            "Non_carriers_with_compl": c,
+                            "Non_carriers_without_compl": d,
+                            "Freq_compl_carriers": a / max(a + b, 1),
+                            "Freq_compl_non_carriers": c / max(c + d, 1),
+                            "Odds_Ratio": or_val,
+                            "P_value": p_val,
+                            "Direction": "Enrichi chez compliqués" if or_val > 1 else "Déplété chez compliqués",
+                        })
+
+                if len(results_pw) == 0:
+                    st.warning("Aucun pathway ne compte assez de patients porteurs pour être testé.")
+                else:
+                    df_res_pw = pd.DataFrame(results_pw).sort_values("P_value").reset_index(drop=True)
+
+                    # Correction multi-tests
+                    n_tests_pw = len(df_res_pw)
+                    if correction_method == "Bonferroni":
+                        df_res_pw["P_adjusted"] = (df_res_pw["P_value"] * n_tests_pw).clip(upper=1.0)
+                    elif correction_method == "FDR (Benjamini-Hochberg)":
+                        df_res_pw["rank"] = df_res_pw.index + 1
+                        df_res_pw["P_adjusted"] = (df_res_pw["P_value"] * n_tests_pw / df_res_pw["rank"]).clip(upper=1.0)
+                        p_adj = np.array(df_res_pw["P_adjusted"].values, copy=True)
+                        for i in range(len(p_adj) - 2, -1, -1):
+                            p_adj[i] = min(p_adj[i], p_adj[i + 1])
+                        df_res_pw["P_adjusted"] = p_adj
+                        df_res_pw = df_res_pw.drop(columns="rank")
+                    else:
+                        df_res_pw["P_adjusted"] = df_res_pw["P_value"]
+
+                    st.markdown(f"**{len(df_res_pw)} pathways testés** (présents chez ≥{min_carriers} patients)")
+
+                    sig_pw = df_res_pw[df_res_pw["P_adjusted"] < 0.05]
+                    nominal_sig_pw = df_res_pw[df_res_pw["P_value"] < 0.05]
+
+                    # MESSAGE INTERPRÉTATIF
+                    st.markdown("### 📋 Conclusion statistique")
+                    if len(sig_pw) > 0:
+                        top_pw_list = sig_pw.head(5)["Pathway"].tolist()
+                        st.success(
+                            f"✅ **{len(sig_pw)} pathway(s) significativement associé(s) à la complication** "
+                            f"après correction {correction_method} (p ajustée < 0.05). "
+                            f"Top : {', '.join(top_pw_list[:3])}. "
+                            f"Ces voies biologiques convergent dans le profil des patients compliqués "
+                            f"et constituent des pistes mécanistiques intéressantes."
+                        )
+                    elif len(nominal_sig_pw) > 0:
+                        top_nominal_pw = nominal_sig_pw.head(5)["Pathway"].tolist()
+                        st.warning(
+                            f"⚠️ **Aucun pathway significatif après correction {correction_method}** "
+                            f"(p ajustée < 0.05). Toutefois, {len(nominal_sig_pw)} pathway(s) ont une "
+                            f"p-value brute < 0.05. Top : {', '.join(top_nominal_pw[:3])}. "
+                            f"Ces signaux exploratoires peuvent guider des analyses ciblées. "
+                            f"L'agrégation au niveau pathway compense partiellement la faible puissance "
+                            f"au niveau gène, mais {n_tests_pw} tests augmentent la pénalité de correction."
+                        )
+                    else:
+                        st.info(
+                            "ℹ️ **Aucun pathway n'est associé à la complication**, même avant correction. "
+                            "La signature biologique des complications n'est pas détectable au niveau "
+                            "fonctionnel avec cette cohorte. Cela peut être dû à une taille d'échantillon "
+                            "limitée, ou à l'absence réelle d'une signature convergente."
+                        )
+
+                    # VOLCANO PLOT
+                    st.markdown("### 📊 Volcano plot")
+                    df_res_pw["log2_OR"] = np.log2(df_res_pw["Odds_Ratio"].clip(lower=0.01, upper=100))
+                    df_res_pw["log10_p"] = -np.log10(df_res_pw["P_adjusted"].clip(lower=1e-10))
+                    df_res_pw["Significant"] = df_res_pw["P_adjusted"] < 0.05
+                    # Nom court pour l'affichage
+                    df_res_pw["Short_name"] = df_res_pw["Pathway"].str[:40]
+
+                    fig = px.scatter(
+                        df_res_pw, x="log2_OR", y="log10_p",
+                        color="Significant",
+                        color_discrete_map={True: "#ff6b6b", False: "#555555"},
+                        hover_data=["Pathway", "N_genes_pw", "N_carriers",
+                                    "Carriers_with_compl", "Odds_Ratio",
+                                    "P_value", "P_adjusted"],
+                        text=df_res_pw.apply(
+                            lambda r: r["Short_name"] if r["P_value"] < 0.05 else "", axis=1
+                        ),
+                        opacity=0.7,
+                    )
+                    fig.update_traces(textposition="top center", textfont_size=8)
+                    fig.add_vline(x=0, line_dash="dash", line_color="#888", opacity=0.5)
+                    fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="#ffd93d", opacity=0.5,
+                                  annotation_text="p ajustée = 0.05")
+                    fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)", height=550,
+                        xaxis_title="log2(Odds Ratio) ← Déplété | Enrichi chez compliqués →",
+                        yaxis_title="-log10(P ajustée)")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # TOP HITS TABLE
+                    st.markdown("### 🔝 Top pathways associés")
+                    display_cols_pw = ["Pathway", "N_genes_pw", "Muted_genes_in_cohort",
+                                       "N_carriers", "Carriers_with_compl", "Carriers_without_compl",
+                                       "Freq_compl_carriers", "Freq_compl_non_carriers",
+                                       "Odds_Ratio", "P_value", "P_adjusted", "Direction"]
+                    display_cols_pw = [c for c in display_cols_pw if c in df_res_pw.columns]
+                    st.dataframe(
+                        df_res_pw[display_cols_pw].head(30).reset_index(drop=True),
+                        use_container_width=True,
+                        column_config={
+                            "N_genes_pw": st.column_config.NumberColumn("Gènes pw"),
+                            "Muted_genes_in_cohort": "Gènes mutés",
+                            "N_carriers": "N porteurs",
+                            "Carriers_with_compl": "Compl+",
+                            "Carriers_without_compl": "Compl-",
+                            "Freq_compl_carriers": st.column_config.NumberColumn("Fréq compl porteurs", format="%.2f"),
+                            "Freq_compl_non_carriers": st.column_config.NumberColumn("Fréq compl non-port.", format="%.2f"),
+                            "Odds_Ratio": st.column_config.NumberColumn("OR", format="%.2f"),
+                            "P_value": st.column_config.NumberColumn("P brute", format="%.4f"),
+                            "P_adjusted": st.column_config.NumberColumn("P ajustée", format="%.4f"),
+                        })
+
+                    # DÉTAIL D'UN PATHWAY
+                    st.markdown("### 🔍 Explorer un pathway")
+                    pw_choice = st.selectbox(
+                        "Sélectionner un pathway",
+                        df_res_pw.head(30)["Pathway"].tolist(),
+                        help="Visualise les gènes mutés du pathway chez les patients."
+                    )
+                    if pw_choice:
+                        row = df_res_pw[df_res_pw["Pathway"] == pw_choice].iloc[0]
+                        pw_all_genes = relevant_pw[pw_choice]
+
+                        # Métriques du pathway
+                        pwm1, pwm2, pwm3, pwm4 = st.columns(4)
+                        pwm1.metric("Gènes dans pathway (panel)", len(pw_all_genes))
+                        pwm2.metric("Patients porteurs", row["N_carriers"])
+                        pwm3.metric("Odds Ratio", f"{row['Odds_Ratio']:.2f}")
+                        pwm4.metric("P ajustée", f"{row['P_adjusted']:.4f}")
+
+                        # Heatmap gènes × patients pour ce pathway
+                        df_c_pw_choice = df_c_pw[df_c_pw["Gene_symbol"].isin(pw_all_genes)]
+                        pw_genes_list = sorted(df_c_pw_choice["Gene_symbol"].unique())
+
+                        if len(pw_genes_list) > 0:
+                            heatmap_data = pd.DataFrame(0, index=pw_genes_list, columns=eligible_patients)
+                            for _, r in df_c_pw_choice.iterrows():
+                                if r["Pseudo"] in heatmap_data.columns:
+                                    heatmap_data.loc[r["Gene_symbol"], r["Pseudo"]] = 1
+
+                            # Trier patients : compliqués d'abord
+                            pat_order = sorted(
+                                eligible_patients,
+                                key=lambda p: (-int(df_pat_clin.loc[p, "Complication_any"]),
+                                               -heatmap_data[p].sum())
+                            )
+                            heatmap_data = heatmap_data[pat_order]
+
+                            # Colorier : 2 si muté + compliqué, 1 si muté sans compl, 0 sinon
+                            colored = heatmap_data.copy().astype(int)
+                            for p in pat_order:
+                                if df_pat_clin.loc[p, "Complication_any"] == 1:
+                                    colored[p] = heatmap_data[p] * 2
+
+                            fig = go.Figure(go.Heatmap(
+                                z=colored.values, x=colored.columns, y=colored.index,
+                                colorscale=[[0, "#0a192f"], [0.5, "#4ecdc4"], [1, "#ff6b6b"]],
+                                zmin=0, zmax=2, showscale=False,
+                                hovertemplate="Patient: %{x}<br>Gène: %{y}<br>Statut: %{z}<extra></extra>",
+                            ))
+                            fig.update_layout(
+                                title=f"Gènes mutés (Patho/LP/VUS) du pathway : {pw_choice[:60]}",
+                                template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                height=max(400, len(pw_genes_list) * 25),
+                                xaxis_tickangle=-90, margin=dict(l=150, b=120),
+                            )
+                            fig.add_annotation(
+                                x=1.02, y=1, xref="paper", yref="paper",
+                                text="🟥 Muté + Compl | 🟩 Muté sans Compl | ⬛ Non muté",
+                                showarrow=False, font=dict(size=10), xanchor="left",
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                    # Export
+                    csv_pw = df_res_pw.to_csv(index=False, sep=";")
+                    st.download_button("📥 Résultats pathways (CSV)", csv_pw,
+                                      "association_pathways.csv", "text/csv", key="dl_pw")
 
     # ── SYNTHÈSE GLOBALE ──
     st.markdown("---")
