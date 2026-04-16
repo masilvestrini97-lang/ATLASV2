@@ -784,12 +784,18 @@ def generate_complications_report(df_c, df_pat_elig, df_pat_clin,
         ]))
         return t
 
-    def fig_to_image(fig, w=700, h=350, width_mm=170):
-        fig.update_layout(template="plotly_white", font_size=9,
-            margin=dict(l=60, r=30, t=40, b=50), width=w, height=h)
-        img_bytes = fig.to_image(format="png", scale=2)
-        img_buf = io.BytesIO(img_bytes)
-        return Image(img_buf, width=width_mm*mm, height=width_mm*mm * h/w)
+    def fig_to_image(matplotlib_fig, width_mm=170):
+        """Convert a matplotlib Figure to a reportlab Image via in-memory PNG."""
+        import matplotlib.pyplot as plt
+        img_buf = io.BytesIO()
+        matplotlib_fig.savefig(img_buf, format="png", dpi=150, bbox_inches="tight",
+                               facecolor="white", edgecolor="none")
+        plt.close(matplotlib_fig)
+        img_buf.seek(0)
+        # Calculate height from the figure dims
+        w_in, h_in = matplotlib_fig.get_size_inches()
+        height_mm = width_mm * (h_in / w_in)
+        return Image(img_buf, width=width_mm*mm, height=height_mm*mm)
 
     # ========== PAGE 1 : TITRE + RESUME ==========
     story.append(Spacer(1, 30))
@@ -856,31 +862,44 @@ def generate_complications_report(df_c, df_pat_elig, df_pat_clin,
     story.append(Spacer(1, 10))
 
     # Figure : bar chart
-    fig = go.Figure(go.Bar(
-        x=list(compl_counts.keys()), y=list(compl_counts.values()),
-        marker_color=["#ff6b6b", "#ffa500", "#ffd93d", "#9b59b6"][:len(compl_counts)],
-        text=list(compl_counts.values()), textposition="outside",
-    ))
-    fig.update_layout(title="Nombre de patients par type de complication",
-        yaxis_title="Patients")
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     try:
-        story.append(fig_to_image(fig, w=700, h=320))
+        fig_mpl, ax = plt.subplots(figsize=(8, 3.5))
+        bar_colors = ["#ff6b6b", "#ffa500", "#ffd93d", "#9b59b6"][:len(compl_counts)]
+        bars = ax.bar(list(compl_counts.keys()), list(compl_counts.values()),
+                      color=bar_colors, edgecolor="#333", linewidth=0.5)
+        for bar, val in zip(bars, compl_counts.values()):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.3,
+                   str(val), ha="center", fontsize=10)
+        ax.set_ylabel("Patients", fontsize=10)
+        ax.set_title("Nombre de patients par type de complication", fontsize=11)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.tick_params(labelsize=9)
+        fig_mpl.tight_layout()
+        story.append(fig_to_image(fig_mpl, width_mm=170))
     except Exception as e:
         story.append(Paragraph(f"[Erreur figure: {e}]", styles['CompSmall']))
     story.append(Spacer(1, 8))
 
     # Figure : pie chart compl vs non-compl
-    fig = go.Figure(go.Pie(
-        labels=["Complique", "Non complique"],
-        values=[n_compl, n_no_compl],
-        marker_colors=["#ff6b6b", "#4ecdc4"],
-        hole=0.4, textinfo="label+percent+value",
-    ))
-    fig.update_layout(title="Repartition compliques vs non compliques")
     try:
-        story.append(fig_to_image(fig, w=500, h=350, width_mm=120))
-    except:
-        pass
+        fig_mpl, ax = plt.subplots(figsize=(6, 4))
+        wedges, texts, autotexts = ax.pie(
+            [n_compl, n_no_compl],
+            labels=["Complique", "Non complique"],
+            colors=["#ff6b6b", "#4ecdc4"],
+            autopct=lambda pct: f"{pct:.1f}%\n({int(round(pct/100 * (n_compl+n_no_compl)))})",
+            startangle=90, wedgeprops=dict(width=0.4, edgecolor="white", linewidth=2),
+            textprops=dict(fontsize=10))
+        ax.set_title("Repartition compliques vs non compliques", fontsize=11)
+        fig_mpl.tight_layout()
+        story.append(fig_to_image(fig_mpl, width_mm=120))
+    except Exception as e:
+        story.append(Paragraph(f"[Erreur figure: {e}]", styles['CompSmall']))
 
     # ========== PAGE 3+ : NIVEAU VARIANT ==========
     story.append(PageBreak())
@@ -929,19 +948,31 @@ def generate_complications_report(df_c, df_pat_elig, df_pat_clin,
         df_res_var_plot["log10_p"] = -np.log10(df_res_var_plot["P_adjusted"].clip(lower=1e-10))
         df_res_var_plot["Significant"] = df_res_var_plot["P_adjusted"] < 0.05
 
-        fig = px.scatter(df_res_var_plot, x="log2_OR", y="log10_p",
-            color="Significant",
-            color_discrete_map={True: "#ff6b6b", False: "#555555"}, opacity=0.7)
-        fig.add_vline(x=0, line_dash="dash", line_color="#888")
-        fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="#ffd93d",
-                      annotation_text="p ajustee = 0.05")
-        fig.update_layout(
-            xaxis_title="log2(Odds Ratio)",
-            yaxis_title="-log10(P ajustee)")
         try:
-            story.append(fig_to_image(fig, w=700, h=380))
-        except:
-            pass
+            fig_mpl, ax = plt.subplots(figsize=(9, 5))
+            # Non-significatifs en gris
+            ns = df_res_var_plot[~df_res_var_plot["Significant"]]
+            s = df_res_var_plot[df_res_var_plot["Significant"]]
+            ax.scatter(ns["log2_OR"], ns["log10_p"], c="#555555", s=25, alpha=0.6,
+                       edgecolor="none", label="Non significatif")
+            if len(s) > 0:
+                ax.scatter(s["log2_OR"], s["log10_p"], c="#ff6b6b", s=40, alpha=0.8,
+                           edgecolor="#cc0000", linewidth=0.5, label="Significatif")
+            ax.axvline(0, linestyle="--", color="#888", linewidth=0.8)
+            ax.axhline(-np.log10(0.05), linestyle="--", color="#ffa500", linewidth=0.8)
+            ax.text(ax.get_xlim()[1] * 0.95, -np.log10(0.05) + 0.05, "p ajustee = 0.05",
+                    fontsize=8, color="#ffa500", ha="right")
+            ax.set_xlabel("log2(Odds Ratio)", fontsize=10)
+            ax.set_ylabel("-log10(P ajustee)", fontsize=10)
+            ax.set_title("Volcano plot : variants", fontsize=11)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.legend(fontsize=9, loc="upper right")
+            ax.tick_params(labelsize=9)
+            fig_mpl.tight_layout()
+            story.append(fig_to_image(fig_mpl, width_mm=170))
+        except Exception as e:
+            story.append(Paragraph(f"[Erreur figure: {e}]", styles['CompSmall']))
         story.append(Spacer(1, 8))
 
         # Tableau top 20 variants
@@ -1017,24 +1048,36 @@ def generate_complications_report(df_c, df_pat_elig, df_pat_clin,
         df_res_gene_plot["log2_OR"] = np.log2(df_res_gene_plot["Odds_Ratio"].clip(lower=0.01, upper=100))
         df_res_gene_plot["log10_p"] = -np.log10(df_res_gene_plot["P_adjusted"].clip(lower=1e-10))
         df_res_gene_plot["Significant"] = df_res_gene_plot["P_adjusted"] < 0.05
-        df_res_gene_plot["Label"] = df_res_gene_plot.apply(
-            lambda r: r["Entity"] if r["P_value"] < 0.1 else "", axis=1)
 
-        fig = px.scatter(df_res_gene_plot, x="log2_OR", y="log10_p",
-            color="Significant",
-            color_discrete_map={True: "#ff6b6b", False: "#555555"},
-            text="Label", opacity=0.7)
-        fig.update_traces(textposition="top center", textfont_size=8)
-        fig.add_vline(x=0, line_dash="dash", line_color="#888")
-        fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="#ffd93d",
-                      annotation_text="p ajustee = 0.05")
-        fig.update_layout(
-            xaxis_title="log2(Odds Ratio)",
-            yaxis_title="-log10(P ajustee)")
         try:
-            story.append(fig_to_image(fig, w=700, h=400))
-        except:
-            pass
+            fig_mpl, ax = plt.subplots(figsize=(9, 5.5))
+            ns = df_res_gene_plot[~df_res_gene_plot["Significant"]]
+            s = df_res_gene_plot[df_res_gene_plot["Significant"]]
+            ax.scatter(ns["log2_OR"], ns["log10_p"], c="#555555", s=25, alpha=0.6,
+                       edgecolor="none", label="Non significatif")
+            if len(s) > 0:
+                ax.scatter(s["log2_OR"], s["log10_p"], c="#ff6b6b", s=45, alpha=0.85,
+                           edgecolor="#cc0000", linewidth=0.5, label="Significatif")
+            # Annoter les top hits (p brute < 0.1)
+            to_label = df_res_gene_plot[df_res_gene_plot["P_value"] < 0.1].head(10)
+            for _, r in to_label.iterrows():
+                ax.annotate(str(r["Entity"]), xy=(r["log2_OR"], r["log10_p"]),
+                    xytext=(4, 4), textcoords="offset points", fontsize=8)
+            ax.axvline(0, linestyle="--", color="#888", linewidth=0.8)
+            ax.axhline(-np.log10(0.05), linestyle="--", color="#ffa500", linewidth=0.8)
+            ax.text(ax.get_xlim()[1] * 0.95, -np.log10(0.05) + 0.05, "p ajustee = 0.05",
+                    fontsize=8, color="#ffa500", ha="right")
+            ax.set_xlabel("log2(Odds Ratio)", fontsize=10)
+            ax.set_ylabel("-log10(P ajustee)", fontsize=10)
+            ax.set_title("Volcano plot : genes", fontsize=11)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.legend(fontsize=9, loc="upper right")
+            ax.tick_params(labelsize=9)
+            fig_mpl.tight_layout()
+            story.append(fig_to_image(fig_mpl, width_mm=170))
+        except Exception as e:
+            story.append(Paragraph(f"[Erreur figure: {e}]", styles['CompSmall']))
 
         # Tableau top 20 genes
         story.append(PageBreak())
