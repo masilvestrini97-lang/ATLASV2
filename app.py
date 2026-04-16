@@ -1402,25 +1402,67 @@ with tab_compl:
             help="Bonferroni : strict. FDR : plus permissif, adapté à l'exploration.",
         )
 
-    st.markdown("**Filtres qualité des variants (identiques aux filtres globaux)**")
+    # ── FILTRES QUALITÉ DES VARIANTS (comme dans Clustering) ──
+    st.markdown("### 🧹 Filtres qualité des variants")
     st.markdown(
-        f"> Profondeur ≥ {depth_min} | AR ≥ {ar_range[0]:.2f} | gnomAD NFE ≤ {af_max:.3f} | "
-        f"Variants non fonctionnels exclus"
+        "> Ces filtres s'appliquent **uniquement à cette analyse** et sont indépendants des filtres "
+        "globaux de la sidebar. Paramétrez la qualité minimale requise pour inclure un variant dans "
+        "les tests d'association."
     )
 
-    excl_nf_compl = st.checkbox("Exclure variants non fonctionnels (synonymes, UTR, introniques)",
-                                 value=True, key="compl_nf")
+    fqc1, fqc2, fqc3, fqc4 = st.columns(4)
+    with fqc1:
+        compl_depth = st.number_input("Profondeur min", value=100, step=50, key="compl_depth",
+            help="Exclut les variants à faible couverture (artéfacts FFPE).")
+    with fqc2:
+        compl_ar = st.number_input("AR min", value=0.05, step=0.01, format="%.2f", key="compl_ar",
+            help="Exclut le bruit à très basse fréquence allélique.")
+    with fqc3:
+        compl_af = st.number_input("gnomAD NFE max", value=0.01, step=0.005, format="%.3f",
+            key="compl_af", help="Exclut les polymorphismes fréquents en population européenne.")
+    with fqc4:
+        compl_excl_ben = st.checkbox("Exclure Benign/LB", value=True, key="compl_ben",
+            help="Exclut les variants classés Benign ou Likely Benign.")
+
+    excluded_effects_compl = st.multiselect("Types de variants à exclure",
+        sorted(NON_FUNCTIONAL_EFFECTS),
+        default=sorted(NON_FUNCTIONAL_EFFECTS),
+        key="compl_eff",
+        help="Les variants non fonctionnels (synonymes, introniques, UTR) ajoutent du bruit.")
 
     # ── CONSTRUCTION DE LA COHORTE ──
-    # Patients à analyser
     if exclude_no_clinical:
         eligible_patients = df_pat_clin[df_pat_clin["Has_clinical_info"]].index.tolist()
     else:
         eligible_patients = df_pat_clin.index.tolist()
 
+    # Point de départ : df_f (filtres globaux appliqués) OU df pour avoir le total brut
+    n_variants_base = len(df_f[df_f["Pseudo"].isin(eligible_patients)])
+
     df_c = df_f[df_f["Pseudo"].isin(eligible_patients)].copy()
-    if excl_nf_compl:
-        df_c = df_c[~df_c["Variant_effect"].isin(NON_FUNCTIONAL_EFFECTS)]
+    df_c = df_c[
+        (df_c["Depth"] >= compl_depth) &
+        (df_c["Allelic_ratio"] >= compl_ar) &
+        (df_c["gnomad_exomes_NFE_AF"].fillna(0) <= compl_af) &
+        (~df_c["Variant_effect"].isin(excluded_effects_compl))
+    ]
+    if compl_excl_ben:
+        df_c = df_c[~df_c["ACMG_class"].isin(["Benign", "Likely Benign"])]
+
+    n_variants_filtered = len(df_c)
+    n_patients_filtered = df_c["Pseudo"].nunique()
+    pct_kept = n_variants_filtered / max(n_variants_base, 1) * 100
+
+    # Métriques du filtrage
+    fm1, fm2, fm3, fm4 = st.columns(4)
+    fm1.metric("Avant filtre", f"{n_variants_base:,}")
+    fm2.metric("Après filtre", f"{n_variants_filtered:,}")
+    fm3.metric("% conservés", f"{pct_kept:.1f}%")
+    fm4.metric("Patients conservés", n_patients_filtered)
+
+    if n_variants_filtered < 10:
+        st.error("Trop peu de variants après filtrage. Assouplissez les filtres qualité.")
+        st.stop()
 
     # ── MÉTRIQUES COHORTE ──
     st.markdown("---")
@@ -1895,7 +1937,8 @@ with tab_compl:
 **Cohorte** : {n_elig} patients ({n_compl} compliqués, {n_no_compl} non compliqués)
 **Complications pures analysées** : {', '.join(avail_compl)}
 **Correction multi-tests** : {correction_method}
-**Filtres appliqués** : Profondeur ≥ {depth_min}, AR ≥ {ar_range[0]:.2f}, gnomAD NFE ≤ {af_max:.3f}
+**Filtres appliqués à l'analyse** : Profondeur ≥ {compl_depth}, AR ≥ {compl_ar:.2f}, gnomAD NFE ≤ {compl_af:.3f}, Benign/LB {"exclus" if compl_excl_ben else "inclus"}
+**Variants** : {n_variants_base:,} avant filtre → {n_variants_filtered:,} après filtre ({pct_kept:.1f}% conservés)
 **Patients exclus (sans info clinique)** : {n_excluded if exclude_no_clinical else 0}
 
 **Note méthodologique** : avec {n_elig} patients répartis en {n_compl}/{n_no_compl},
