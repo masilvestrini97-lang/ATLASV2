@@ -163,8 +163,9 @@ def load_data(uploaded_file):
 
 
 @st.cache_data
+@st.cache_data
 def load_gmt(gmt_file):
-    """Charge un fichier GMT et retourne un dict pathway_name -> set(genes)."""
+    """Charge un fichier GMT depuis un upload Streamlit et retourne un dict."""
     pathways = {}
     content = gmt_file.read().decode("utf-8") if hasattr(gmt_file, 'read') else open(gmt_file).read()
     for line in content.strip().split("\n"):
@@ -172,6 +173,38 @@ def load_gmt(gmt_file):
         if len(parts) >= 3:
             pathways[parts[0]] = set(parts[2:])
     return pathways
+
+
+@st.cache_data
+def load_gmt_from_path(path):
+    """Charge un fichier GMT depuis un chemin local (dans le repo)."""
+    import os
+    if not os.path.exists(path):
+        return None
+    pathways = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 3:
+                pathways[parts[0]] = set(parts[2:])
+    return pathways
+
+
+@st.cache_data
+def load_gmt_from_url(url):
+    """Télécharge et charge un fichier GMT depuis une URL."""
+    import urllib.request
+    pathways = {}
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            content = response.read().decode("utf-8")
+        for line in content.strip().split("\n"):
+            parts = line.strip().split("\t")
+            if len(parts) >= 3:
+                pathways[parts[0]] = set(parts[2:])
+        return pathways
+    except Exception as e:
+        return None
 
 
 def get_relevant_pathways(pathways, panel_genes, min_genes=2):
@@ -1186,8 +1219,59 @@ st.markdown('<p class="main-title">🧬 Variant Explorer</p>', unsafe_allow_html
 st.markdown('<p class="sub-title">Exploration interactive de variants génomiques — Séquençage ciblé</p>', unsafe_allow_html=True)
 
 uploaded_file = st.sidebar.file_uploader("📁 Fichier variants (.csv)", type=["csv"])
-gmt_file = st.sidebar.file_uploader("📁 Pathways (.gmt)", type=["gmt"],
-    help="Fichier GMT (MSigDB). Optionnel, enrichit le clustering avec les pathways.")
+
+# ── CHARGEMENT DES PATHWAYS (multi-sources) ──
+st.sidebar.markdown("### 🧬 Pathways (optionnel)")
+
+# 1. Essayer de trouver un fichier GMT local dans le repo
+import os
+LOCAL_GMT_CANDIDATES = ["pathways.gmt", "data/pathways.gmt", "gmt/pathways.gmt"]
+local_gmt_path = None
+for candidate in LOCAL_GMT_CANDIDATES:
+    if os.path.exists(candidate):
+        local_gmt_path = candidate
+        break
+
+# 2. Interface
+pathways_dict = None
+gmt_source = "Aucun"
+
+if local_gmt_path:
+    # Fichier trouvé automatiquement dans le repo
+    use_local_gmt = st.sidebar.checkbox(
+        f"✅ Utiliser `{local_gmt_path}` (repo)", value=True,
+        help="Fichier GMT détecté automatiquement dans le repo GitHub."
+    )
+    if use_local_gmt:
+        pathways_dict = load_gmt_from_path(local_gmt_path)
+        gmt_source = f"Local: {local_gmt_path}"
+
+# Option alternative : uploader un fichier
+gmt_file = st.sidebar.file_uploader(
+    "📁 Ou uploader un GMT (.gmt)", type=["gmt"],
+    help="Alternative : uploader manuellement un fichier GMT (MSigDB)."
+)
+if gmt_file:
+    pathways_dict = load_gmt(gmt_file)
+    gmt_source = f"Upload: {gmt_file.name}"
+
+# Option alternative : URL
+with st.sidebar.expander("🌐 Ou depuis une URL"):
+    gmt_url = st.text_input("URL du fichier GMT", value="",
+        placeholder="https://...")
+    if st.button("Télécharger", key="dl_gmt") and gmt_url:
+        with st.spinner("Téléchargement..."):
+            pw = load_gmt_from_url(gmt_url)
+            if pw:
+                pathways_dict = pw
+                gmt_source = f"URL ({len(pw)} pathways)"
+                st.success(f"✅ {len(pw)} pathways chargés")
+            else:
+                st.error("Échec du téléchargement. Vérifiez l'URL.")
+
+if pathways_dict:
+    st.sidebar.markdown(f"📊 **{len(pathways_dict)} pathways** chargés")
+    st.sidebar.caption(f"Source : {gmt_source}")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🤖 IA")
@@ -1198,7 +1282,6 @@ if uploaded_file is None:
     st.info("👈 **Chargez votre fichier CSV** via la barre latérale."); st.stop()
 
 df = load_data(uploaded_file)
-pathways_dict = load_gmt(gmt_file) if gmt_file else None
 
 # ─────────────────────────────────────────────
 # FILTRES
