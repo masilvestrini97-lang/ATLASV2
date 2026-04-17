@@ -3410,15 +3410,17 @@ with tab_qc:
             radar_norm[col] = 0.5
 
     fig = go.Figure()
-    for grp, color in [("Compliqué", "#ff6b6b"), ("Non compliqué", "#4ecdc4")]:
+    color_rgba = {"Compliqué": "rgba(255,107,107,0.15)", "Non compliqué": "rgba(78,205,196,0.15)"}
+    color_line = {"Compliqué": "#ff6b6b", "Non compliqué": "#4ecdc4"}
+    for grp in ["Compliqué", "Non compliqué"]:
         if grp in radar_norm.index:
             vals = radar_norm.loc[grp].values.tolist()
-            vals.append(vals[0])  # Fermer le polygone
+            vals.append(vals[0])
             labels = radar_cols + [radar_cols[0]]
             fig.add_trace(go.Scatterpolar(
                 r=vals, theta=labels, fill='toself', name=grp,
-                fillcolor=color.replace(")", ",0.15)").replace("rgb", "rgba") if "rgb" in color else color + "22",
-                line_color=color, opacity=0.8,
+                fillcolor=color_rgba[grp],
+                line_color=color_line[grp], opacity=0.8,
             ))
 
     fig.update_layout(
