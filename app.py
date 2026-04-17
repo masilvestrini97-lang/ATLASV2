@@ -1223,14 +1223,28 @@ uploaded_file = st.sidebar.file_uploader("📁 Fichier variants (.csv)", type=["
 # ── CHARGEMENT DES PATHWAYS (multi-sources) ──
 st.sidebar.markdown("### 🧬 Pathways (optionnel)")
 
-# 1. Essayer de trouver un fichier GMT local dans le repo
+# 1. Essayer de trouver un fichier GMT local dans le repo (détection flexible)
 import os
-LOCAL_GMT_CANDIDATES = ["pathways.gmt", "data/pathways.gmt", "gmt/pathways.gmt"]
-local_gmt_path = None
-for candidate in LOCAL_GMT_CANDIDATES:
-    if os.path.exists(candidate):
-        local_gmt_path = candidate
-        break
+import glob
+
+def find_local_gmt():
+    """Cherche un fichier GMT dans le repo en étant flexible sur le nom/extension."""
+    # Chemins prioritaires (noms canoniques)
+    priority_paths = ["pathways.gmt", "data/pathways.gmt", "gmt/pathways.gmt"]
+    for p in priority_paths:
+        if os.path.exists(p):
+            return p
+
+    # Fallback : n'importe quel fichier .gmt ou contenant "gmt" dans le nom à la racine ou sous-dossier
+    patterns = ["*.gmt", "*gmt*.txt", "data/*.gmt", "gmt/*.gmt", "data/*gmt*.txt"]
+    for pattern in patterns:
+        matches = glob.glob(pattern)
+        if matches:
+            # Retourner le plus petit (souvent le plus pertinent) ou le premier
+            return matches[0]
+    return None
+
+local_gmt_path = find_local_gmt()
 
 # 2. Interface
 pathways_dict = None
@@ -2170,8 +2184,9 @@ with tab_compl:
     st.markdown("## 🧪 Résultats de l'analyse d'association")
 
     # Deux sous-onglets pour les 2 niveaux
-    lvl_var, lvl_gene, lvl_pw = st.tabs(
-        ["📍 Niveau variant", "🧬 Niveau gène (Patho/LP/VUS)", "🔬 Niveau pathway"]
+    lvl_var, lvl_gene, lvl_pw, lvl_sig = st.tabs(
+        ["📍 Niveau variant", "🧬 Niveau gène (Patho/LP/VUS)",
+         "🔬 Niveau pathway", "🔥 Signatures par complication"]
     )
 
     # ─── NIVEAU VARIANT ───
@@ -2534,8 +2549,30 @@ with tab_compl:
                 acmg_filter_pw = ["Pathogenic", "Likely Pathogenic", "VUS"]
                 df_c_pw = df_c[df_c["ACMG_class"].isin(acmg_filter_pw)]
 
+                # Diagnostic préalable
+                n_pw_variants = len(df_c_pw)
+                n_pw_patients = df_c_pw["Pseudo"].nunique()
+                n_pw_genes = df_c_pw["Gene_symbol"].nunique()
+
+                with st.expander(f"🔍 Diagnostic : {n_pw_variants} variants Patho/LP/VUS "
+                                 f"chez {n_pw_patients} patients sur {n_pw_genes} gènes"):
+                    st.markdown(
+                        f"- **Variants retenus** (après filtres qualité + ACMG Patho/LP/VUS) : {n_pw_variants}\n"
+                        f"- **Patients porteurs** d'au moins 1 variant Patho/LP/VUS : {n_pw_patients} / {len(eligible_patients)}\n"
+                        f"- **Gènes touchés** : {n_pw_genes}\n"
+                        f"- **Seuil porteurs minimum** : {min_carriers} (paramètre global)\n"
+                        f"- **Correction** : {correction_method}"
+                    )
+                    if n_pw_patients < len(eligible_patients) * 0.5:
+                        st.warning(
+                            f"⚠️ Seulement {n_pw_patients}/{len(eligible_patients)} patients ont au moins "
+                            f"un variant Patho/LP/VUS. Beaucoup de patients n'ont que des variants Benign. "
+                            f"L'analyse par pathway va manquer de puissance."
+                        )
+
                 with st.spinner(f"Test de Fisher sur {len(relevant_pw)} pathways..."):
                     results_pw = []
+                    skipped_low_carriers = 0
                     compl_set = set(df_pat_elig[df_pat_elig["Complication_any"] == 1].index)
 
                     # Gènes mutés (avec filtre ACMG) par patient
@@ -2559,6 +2596,7 @@ with tab_compl:
 
                         # Filtre : pathway doit avoir au moins N porteurs
                         if a + b < min_carriers:
+                            skipped_low_carriers += 1
                             continue
                         if c + d == 0:
                             continue
@@ -2591,8 +2629,17 @@ with tab_compl:
                             "Direction": "Enrichi chez compliqués" if or_val > 1 else "Déplété chez compliqués",
                         })
 
+                # Résumé du filtrage
+                st.markdown(
+                    f"**{len(results_pw)} pathways testés** | "
+                    f"{skipped_low_carriers} pathways ignorés (< {min_carriers} porteurs)"
+                )
+
                 if len(results_pw) == 0:
-                    st.warning("Aucun pathway ne compte assez de patients porteurs pour être testé.")
+                    st.warning(
+                        f"Aucun pathway ne compte assez de patients porteurs (seuil = {min_carriers}). "
+                        f"Essayez de baisser le seuil 'Nb minimum de patients porteurs' en haut de l'onglet."
+                    )
                 else:
                     df_res_pw = pd.DataFrame(results_pw).sort_values("P_value").reset_index(drop=True)
 
@@ -2764,6 +2811,240 @@ with tab_compl:
                     csv_pw = df_res_pw.to_csv(index=False, sep=";")
                     st.download_button("📥 Résultats pathways (CSV)", csv_pw,
                                       "association_pathways.csv", "text/csv", key="dl_pw")
+
+    # ─── SIGNATURES PAR TYPE DE COMPLICATION ───
+    with lvl_sig:
+        st.markdown("### 🔥 Signatures par type de complication")
+        st.markdown(
+            "Visualisation des mutations partagées entre patients **selon le type de complication** "
+            "(BO, PNP, MG, FDSCS). Permet d'identifier si un sous-type de complication est associé "
+            "à un profil mutationnel particulier."
+        )
+
+        # Radio pour choisir le niveau
+        sig_level = st.radio("Niveau d'analyse", ["Par gène", "Par variant"],
+            horizontal=True, key="sig_level",
+            help="Gène : patients partageant une mutation sur le même gène. "
+                 "Variant : patients partageant exactement le même variant.")
+
+        acmg_filter_sig = ["Pathogenic", "Likely Pathogenic", "VUS"]
+        df_c_sig = df_c[df_c["ACMG_class"].isin(acmg_filter_sig)].copy()
+
+        entity_col_sig = "Gene_symbol" if sig_level == "Par gène" else "Variant"
+        entity_label = "gène" if sig_level == "Par gène" else "variant"
+
+        # Patients compliqués uniquement, avec détail par type
+        compl_patients = {}  # patient -> list of complications
+        for pseudo in eligible_patients:
+            pat_compls = []
+            for compl_type in avail_compl:
+                try:
+                    val = df_pat_clin.loc[pseudo, compl_type]
+                    if pd.notna(val) and float(val) == 1:
+                        pat_compls.append(compl_type)
+                except:
+                    pass
+            if pat_compls:
+                compl_patients[pseudo] = pat_compls
+
+        if len(compl_patients) < 2:
+            st.warning("Pas assez de patients compliqués pour cette analyse.")
+        else:
+            st.markdown(f"**{len(compl_patients)} patients compliqués** avec données de complication détaillées")
+
+            # ── VUE 0 : CO-SURVENUE DES COMPLICATIONS ──
+            st.markdown("### 🔄 Co-survenue des complications")
+            st.markdown("Quelles complications tendent à coexister chez les mêmes patients ?")
+
+            cooccur_compl = pd.DataFrame(0, index=avail_compl, columns=avail_compl, dtype=int)
+            for pseudo, compls in compl_patients.items():
+                for c1 in compls:
+                    for c2 in compls:
+                        cooccur_compl.loc[c1, c2] += 1
+
+            fig = go.Figure(go.Heatmap(
+                z=cooccur_compl.values, x=cooccur_compl.columns, y=cooccur_compl.index,
+                colorscale=[[0, "#0a192f"], [1, "#ff6b6b"]],
+                text=cooccur_compl.values, texttemplate="%{text}",
+                showscale=True, colorbar_title="Patients",
+            ))
+            fig.update_layout(
+                title="Co-survenue des complications (diagonale = effectif par type)",
+                template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)", height=350, width=500,
+            )
+            st.plotly_chart(fig, use_container_width=False)
+
+            # ── VUE 1 : HEATMAP ENTITÉ × PATIENTS COMPLIQUÉS ──
+            st.markdown(f"### 🗺️ Heatmap : {entity_label}s mutés × patients compliqués")
+            st.markdown(
+                f"Chaque ligne est un {entity_label} muté (Patho/LP/VUS), chaque colonne un patient compliqué, "
+                f"coloré par son type de complication principal."
+            )
+
+            # Seuil de fréquence pour les entités
+            min_freq_sig = st.slider(
+                f"Nb min de patients compliqués porteurs du {entity_label}",
+                min_value=2, max_value=max(5, len(compl_patients) // 2),
+                value=2, key="sig_min_freq"
+            )
+
+            # Matrice binaire entité × patients compliqués
+            compl_pseudos = list(compl_patients.keys())
+            df_c_compl = df_c_sig[df_c_sig["Pseudo"].isin(compl_pseudos)]
+
+            # Entités fréquentes chez les compliqués
+            entity_counts = df_c_compl.groupby(entity_col_sig)["Pseudo"].nunique()
+            freq_entities = entity_counts[entity_counts >= min_freq_sig].sort_values(ascending=False)
+
+            if len(freq_entities) == 0:
+                st.warning(f"Aucun {entity_label} n'est présent chez ≥{min_freq_sig} patients compliqués.")
+            else:
+                n_show = min(40, len(freq_entities))
+                top_entities_sig = freq_entities.head(n_show).index.tolist()
+
+                # Matrice binaire
+                hm_binary = pd.DataFrame(0, index=top_entities_sig, columns=compl_pseudos)
+                for ent in top_entities_sig:
+                    carriers = df_c_compl[df_c_compl[entity_col_sig] == ent]["Pseudo"].unique()
+                    for p in carriers:
+                        if p in hm_binary.columns:
+                            hm_binary.loc[ent, p] = 1
+
+                # Trier les colonnes (patients) par type de complication
+                def compl_sort_key(pseudo):
+                    compls = compl_patients.get(pseudo, [])
+                    return (compls[0] if compls else "ZZZ", -hm_binary[pseudo].sum())
+                pat_sorted = sorted(compl_pseudos, key=compl_sort_key)
+                hm_binary = hm_binary[pat_sorted]
+
+                # Annotation couleur par complication
+                compl_color_map = {"BO": "#ff6b6b", "PNP": "#ffa500", "MG": "#ffd93d", "FDSCS": "#9b59b6"}
+                pat_colors = []
+                pat_annotations = []
+                for p in pat_sorted:
+                    compls = compl_patients.get(p, [])
+                    pat_colors.append(compl_color_map.get(compls[0], "#888") if compls else "#888")
+                    pat_annotations.append(" + ".join(compls))
+
+                # Figure principale
+                fig = go.Figure()
+
+                # Heatmap mutations
+                fig.add_trace(go.Heatmap(
+                    z=hm_binary.values,
+                    x=hm_binary.columns, y=hm_binary.index,
+                    colorscale=[[0, "#0a192f"], [1, "#64ffda"]],
+                    showscale=False, zmin=0, zmax=1,
+                    hovertemplate="Patient: %{x}<br>" + entity_label.capitalize() +
+                        ": %{y}<br>Muté: %{z}<extra></extra>",
+                ))
+
+                fig.update_layout(
+                    title=f"Top {n_show} {entity_label}s mutés chez les patients compliqués",
+                    template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    height=max(500, n_show * 22 + 100),
+                    xaxis_tickangle=-90,
+                    margin=dict(l=180 if sig_level == "Par variant" else 120, b=120, t=80),
+                    xaxis_title="Patient", yaxis_title=entity_label.capitalize(),
+                )
+
+                # Ajouter annotation des complications sous le graphe
+                for i, (p, annot) in enumerate(zip(pat_sorted, pat_annotations)):
+                    fig.add_annotation(
+                        x=p, y=top_entities_sig[-1],
+                        yshift=-20,
+                        text=annot,
+                        showarrow=False, font=dict(size=7, color=pat_colors[i]),
+                        textangle=-90, xanchor="center",
+                    )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Légende complications
+                legend_html = " &nbsp;|&nbsp; ".join(
+                    [f'<span style="color:{v}">⬤ {k}</span>' for k, v in compl_color_map.items()]
+                )
+                st.markdown(f"**Légende complications** : {legend_html}", unsafe_allow_html=True)
+
+                # ── VUE 2 : MATRICE SIGNATURE — ENTITÉ × TYPE DE COMPLICATION ──
+                st.markdown(f"### 📊 Fréquence de mutation par type de complication")
+                st.markdown(
+                    f"Pour chaque {entity_label} et chaque type de complication : "
+                    f"**pourcentage de patients** de ce type portant une mutation. "
+                    f"Permet d'identifier les {entity_label}s spécifiques à un sous-type."
+                )
+
+                # Calcul de la matrice % par complication
+                freq_matrix = pd.DataFrame(0.0, index=top_entities_sig, columns=avail_compl)
+                for compl_type in avail_compl:
+                    # Patients ayant cette complication
+                    pats_with = [p for p, cs in compl_patients.items() if compl_type in cs]
+                    n_with = len(pats_with)
+                    if n_with == 0:
+                        continue
+                    for ent in top_entities_sig:
+                        carriers = set(df_c_compl[df_c_compl[entity_col_sig] == ent]["Pseudo"].unique())
+                        n_carriers_with = len(carriers & set(pats_with))
+                        freq_matrix.loc[ent, compl_type] = round(n_carriers_with / n_with * 100, 1)
+
+                # Ajouter colonne "Non compliqué" pour référence
+                non_compl_pats = [p for p in eligible_patients if p not in compl_patients]
+                if len(non_compl_pats) > 0:
+                    df_c_noncompl = df_c_sig[df_c_sig["Pseudo"].isin(non_compl_pats)]
+                    n_nc = len(non_compl_pats)
+                    freq_non_compl = []
+                    for ent in top_entities_sig:
+                        carriers = set(df_c_noncompl[df_c_noncompl[entity_col_sig] == ent]["Pseudo"].unique())
+                        freq_non_compl.append(round(len(carriers) / n_nc * 100, 1))
+                    freq_matrix["Non compliqué"] = freq_non_compl
+
+                fig = px.imshow(
+                    freq_matrix,
+                    color_continuous_scale=["#0a192f", "#ffa500", "#ff6b6b"],
+                    labels=dict(x="Complication", y=entity_label.capitalize(), color="% porteurs"),
+                    aspect="auto",
+                    text_auto=".0f",
+                )
+                fig.update_layout(
+                    title=f"% de patients porteurs par type de complication — top {n_show} {entity_label}s",
+                    template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    height=max(500, n_show * 22),
+                    margin=dict(l=180 if sig_level == "Par variant" else 120, b=60),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # ── VUE 3 : TABLEAU RÉCAPITULATIF ──
+                st.markdown(f"### 📋 Tableau récapitulatif")
+
+                # Pour chaque entité, enrichir avec l'info du gène si variant
+                recap_data = []
+                for ent in top_entities_sig:
+                    row = {"Entity": ent}
+                    if sig_level == "Par variant":
+                        gene_info = df_c_compl[df_c_compl["Variant"] == ent]["Gene_symbol"].iloc[0] \
+                            if len(df_c_compl[df_c_compl["Variant"] == ent]) > 0 else ""
+                        hgvsp = df_c_compl[df_c_compl["Variant"] == ent]["hgvs.p"].iloc[0] \
+                            if len(df_c_compl[df_c_compl["Variant"] == ent]) > 0 else ""
+                        row["Gène"] = gene_info
+                        row["HGVS.p"] = hgvsp if pd.notna(hgvsp) else ""
+                    row["N patients compliqués"] = int(hm_binary.loc[ent].sum())
+                    for compl_type in avail_compl:
+                        row[f"% {compl_type}"] = freq_matrix.loc[ent, compl_type]
+                    if "Non compliqué" in freq_matrix.columns:
+                        row["% Non compl."] = freq_matrix.loc[ent, "Non compliqué"]
+                    recap_data.append(row)
+
+                df_recap = pd.DataFrame(recap_data)
+                st.dataframe(df_recap.reset_index(drop=True), use_container_width=True,
+                    height=min(600, len(df_recap) * 35 + 40))
+
+                # Export
+                csv_sig = df_recap.to_csv(index=False, sep=";")
+                st.download_button(f"📥 Signatures par complication (CSV)", csv_sig,
+                    f"signatures_complication_{entity_label}.csv", "text/csv", key="dl_sig")
 
     # ── SYNTHÈSE GLOBALE ──
     st.markdown("---")
