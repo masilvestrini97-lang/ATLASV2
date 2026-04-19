@@ -2661,6 +2661,10 @@ with tab_compl:
 
                     st.markdown(f"**{len(df_res_pw)} pathways testés** (présents chez ≥{min_carriers} patients)")
 
+                    st.markdown(f"🔧 *Correction appliquée : {correction_method} | "
+                                f"P brute min : {df_res_pw['P_value'].min():.6f} | "
+                                f"P ajustée min : {df_res_pw['P_adjusted'].min():.6f}*")
+
                     sig_pw = df_res_pw[df_res_pw["P_adjusted"] < 0.05]
                     nominal_sig_pw = df_res_pw[df_res_pw["P_value"] < 0.05]
 
