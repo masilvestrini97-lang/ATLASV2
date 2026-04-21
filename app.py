@@ -1326,10 +1326,9 @@ df_f = df_f[
 # ─────────────────────────────────────────────
 # ONGLETS
 # ─────────────────────────────────────────────
-tab_ov, tab_var, tab_pat, tab_gene, tab_acmg, tab_vaf, tab_coocc, tab_compl, tab_qc, tab_clust = st.tabs(
-    ["📊 Vue d'ensemble", "🔎 Variants", "👤 Patient", "🧬 Gène", "🏷️ ACMG",
-     "📈 VAF & Clonalité", "🔗 Co-occurrence", "🎯 Complications",
-     "⚖️ Homogénéité", "🔬 Clustering"]
+tab_ov, tab_pat, tab_acmg, tab_compl, tab_qc = st.tabs(
+    ["📊 Vue d'ensemble", "👤 Patient", "🏷️ ACMG",
+     "🎯 Complications", "⚖️ Homogénéité"]
 )
 
 # ═══════ VUE D'ENSEMBLE ═══════
@@ -1393,25 +1392,6 @@ with tab_ov:
         st.plotly_chart(fig, use_container_width=True)
 
 # ═══════ VARIANTS ═══════
-with tab_var:
-    st.markdown("## 🔎 Explorateur de variants")
-    search = st.text_input("🔍 Recherche", "")
-    dv = df_f[df_f.apply(lambda r: search.lower() in str(r.values).lower(), axis=1)] if search else df_f
-    st.markdown(f"**{len(dv):,} variants**")
-    sc = ["Pseudo", "Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect",
-          "Putative_impact", "ACMG_class", "Clinvar_significance", "CADD_phred",
-          "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
-    sc = [c for c in sc if c in dv.columns]
-    st.dataframe(dv[sc].reset_index(drop=True), use_container_width=True, height=600,
-        column_config={
-            "CADD_phred": st.column_config.NumberColumn("CADD", format="%.1f"),
-            "gnomad_exomes_NFE_AF": st.column_config.NumberColumn("gnomAD NFE", format="%.5f"),
-            "Allelic_ratio": st.column_config.ProgressColumn("AR", min_value=0, max_value=1, format="%.2f"),
-            "impact_score": st.column_config.NumberColumn("Impact", format="%.1f"),
-        })
-    st.download_button("📥 CSV", dv[sc].to_csv(index=False, sep=";"), "variants_filtered.csv", "text/csv")
-
-# ═══════ PATIENT ═══════
 with tab_pat:
     st.markdown("## 👤 Vue par patient")
     pat = st.selectbox("Patient", sorted(df_f["Pseudo"].unique()))
@@ -1459,39 +1439,6 @@ with tab_pat:
                  use_container_width=True, height=400)
 
 # ═══════ GÈNE ═══════
-with tab_gene:
-    st.markdown("## 🧬 Vue par gène")
-    gene = st.selectbox("Gène", sorted(df_f["Gene_symbol"].unique()))
-    dg = df_f[df_f["Gene_symbol"] == gene]
-    g1, g2, g3, g4 = st.columns(4)
-    g1.metric("Variants", len(dg)); g2.metric("Patients", dg["Pseudo"].nunique())
-    g3.metric("Uniques", dg["Variant"].nunique())
-    mz = dg["mis_z"].iloc[0] if len(dg) > 0 and pd.notna(dg["mis_z"].iloc[0]) else None
-    g4.metric("mis_z", f"{mz:.2f}" if mz else "N/A")
-    cl, cr = st.columns(2)
-    with cl:
-        gs = dg.dropna(subset=["Position", "Allelic_ratio"])
-        if len(gs) > 0:
-            fig = px.scatter(gs, x="Position", y="Allelic_ratio", color="ACMG_class",
-                color_discrete_map=ACMG_COLORS, size="Depth", size_max=15,
-                hover_data=["hgvs.c", "hgvs.p", "Pseudo", "Variant_effect"],
-                category_orders={"ACMG_class": ACMG_ORDER})
-            fig.update_layout(title=f"{gene} — Position vs AR", template="plotly_dark",
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=450)
-            st.plotly_chart(fig, use_container_width=True)
-    with cr:
-        gb = dg.groupby("Pseudo")["Variant"].count().sort_values()
-        fig = go.Figure(go.Bar(y=gb.index, x=gb.values, orientation="h",
-            marker_color="#48b1bf", text=gb.values, textposition="outside"))
-        fig.update_layout(title=f"{gene} — patients", template="plotly_dark",
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=450, margin=dict(l=100))
-        st.plotly_chart(fig, use_container_width=True)
-    gc = ["Pseudo", "Variant", "hgvs.c", "hgvs.p", "Variant_effect", "Putative_impact",
-          "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth", "impact_score"]
-    st.dataframe(dg[[c for c in gc if c in dg.columns]].reset_index(drop=True),
-                 use_container_width=True, height=400)
-
-# ═══════ ACMG ═══════
 with tab_acmg:
     st.markdown("## 🏷️ Classification ACMG")
     st.markdown("> ⚠️ Classification **automatique**. Ne remplace pas une revue manuelle.")
@@ -1524,377 +1471,6 @@ with tab_acmg:
 
 # ═══════════════════════════════════════════════════════
 # VAF & CLONALITÉ
-# ═══════════════════════════════════════════════════════
-with tab_vaf:
-    st.markdown("## 📈 VAF & Charge Tumorale")
-    st.markdown(
-        "Analyse de la **fréquence allélique des variants (VAF)** par patient. "
-        "La distribution des VAFs reflète la structure clonale de la tumeur : "
-        "les VAFs élevées correspondent à des mutations **clonales** (événements précoces), "
-        "les VAFs basses à des clones mineurs (hétérogénéité intra-tumorale)."
-    )
-    st.markdown(
-        "> ⚠️ En FFPE sans contrôle de pureté tumorale, les VAFs absolues sont modulées "
-        "par le ratio tumeur/normal. La **distribution relative** reste informative."
-    )
-
-    # Filtres qualité pour VAF
-    st.markdown("### Filtres")
-    vc1, vc2, vc3 = st.columns(3)
-    with vc1:
-        vaf_depth = st.number_input("Profondeur min", value=100, step=50, key="vaf_d")
-    with vc2:
-        vaf_af_max = st.number_input("gnomAD NFE max", value=0.01, step=0.005, format="%.3f", key="vaf_af")
-    with vc3:
-        vaf_excl_nf = st.checkbox("Exclure non fonctionnels", value=True, key="vaf_nf")
-
-    df_vaf = df_f[(df_f["Depth"] >= vaf_depth) &
-                  (df_f["gnomad_exomes_NFE_AF"].fillna(0) <= vaf_af_max)].copy()
-    if vaf_excl_nf:
-        df_vaf = df_vaf[~df_vaf["Variant_effect"].isin(NON_FUNCTIONAL_EFFECTS)]
-
-    # Exclure benign pour focus tumoral
-    df_vaf = df_vaf[~df_vaf["ACMG_class"].isin(["Benign", "Likely Benign"])]
-
-    st.markdown(f"**{len(df_vaf):,} variants** après filtrage")
-
-    if len(df_vaf) > 0:
-        # ── RÉSUMÉ TMB PAR PATIENT ──
-        st.markdown("### Charge mutationnelle par patient")
-
-        tmb_summary = []
-        for pseudo in sorted(df_vaf["Pseudo"].unique()):
-            dp = df_vaf[df_vaf["Pseudo"] == pseudo]
-            vafs = dp["Allelic_ratio"]
-            tmb_summary.append({
-                "Patient": pseudo,
-                "N_variants": len(dp),
-                "N_gènes": dp["Gene_symbol"].nunique(),
-                "VAF_médiane": round(vafs.median(), 3),
-                "VAF_max": round(vafs.max(), 3),
-                "N_clonal (VAF≥0.25)": int((vafs >= 0.25).sum()),
-                "N_sous-clonal (0.1-0.25)": int(((vafs >= 0.1) & (vafs < 0.25)).sum()),
-                "N_mineur (VAF<0.1)": int((vafs < 0.1).sum()),
-                "% clonal": round((vafs >= 0.25).sum() / max(len(vafs), 1) * 100, 1),
-                "Score TMB": round(len(dp) * vafs.mean(), 2),  # nb variants × VAF moyenne
-            })
-        df_tmb = pd.DataFrame(tmb_summary).sort_values("Score TMB", ascending=False)
-
-        # Bar chart TMB
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=df_tmb["Patient"], y=df_tmb["N_clonal (VAF≥0.25)"],
-            name="Clonal (VAF ≥ 0.25)", marker_color="#ff6b6b"))
-        fig.add_trace(go.Bar(
-            x=df_tmb["Patient"], y=df_tmb["N_sous-clonal (0.1-0.25)"],
-            name="Sous-clonal (0.1–0.25)", marker_color="#ffa500"))
-        fig.add_trace(go.Bar(
-            x=df_tmb["Patient"], y=df_tmb["N_mineur (VAF<0.1)"],
-            name="Mineur (VAF < 0.1)", marker_color="#4ecdc4"))
-        fig.update_layout(barmode="stack", template="plotly_dark",
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-            height=450, xaxis_tickangle=-45, margin=dict(b=100),
-            title="Structure clonale par patient",
-            yaxis_title="Nombre de variants", legend_title="Clonalité")
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Tableau TMB
-        st.dataframe(df_tmb.reset_index(drop=True), use_container_width=True, height=400,
-            column_config={
-                "VAF_médiane": st.column_config.NumberColumn("VAF méd.", format="%.3f"),
-                "VAF_max": st.column_config.NumberColumn("VAF max", format="%.3f"),
-                "Score TMB": st.column_config.NumberColumn("Score TMB", format="%.1f"),
-                "% clonal": st.column_config.ProgressColumn("% clonal", min_value=0, max_value=100, format="%.1f%%"),
-            })
-
-        st.markdown("---")
-
-        # ── VUE PAR PATIENT : SPECTRE VAF ──
-        st.markdown("### Spectre VAF par patient")
-        vaf_patient = st.selectbox("Patient", df_tmb["Patient"].tolist(), key="vaf_pat")
-        dp_vaf = df_vaf[df_vaf["Pseudo"] == vaf_patient]
-
-        vl, vr = st.columns(2)
-
-        with vl:
-            # Histogramme VAF
-            fig = px.histogram(dp_vaf, x="Allelic_ratio", nbins=30,
-                color="ACMG_class", color_discrete_map=ACMG_COLORS,
-                category_orders={"ACMG_class": ACMG_ORDER},
-                barmode="overlay", opacity=0.7)
-            fig.add_vline(x=0.25, line_dash="dash", line_color="#ff6b6b", opacity=0.7,
-                          annotation_text="Clonal (0.25)")
-            fig.add_vline(x=0.1, line_dash="dash", line_color="#ffa500", opacity=0.5,
-                          annotation_text="Sous-clonal (0.1)")
-            fig.update_layout(title=f"Distribution VAF — {vaf_patient}",
-                template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)", height=400,
-                xaxis_title="VAF (Allelic Ratio)", yaxis_title="Variants")
-            st.plotly_chart(fig, use_container_width=True)
-
-        with vr:
-            # VAF vs Impact Score
-            fig = px.scatter(dp_vaf, x="Allelic_ratio", y="impact_score",
-                color="Putative_impact", color_discrete_map=IMPACT_COLORS,
-                size="Depth", size_max=15,
-                hover_data=["Gene_symbol", "hgvs.c", "hgvs.p", "ACMG_class"],
-                category_orders={"Putative_impact": IMPACT_ORDER})
-            fig.add_vline(x=0.25, line_dash="dash", line_color="#ff6b6b", opacity=0.5)
-            fig.update_layout(title=f"VAF vs Impact Score — {vaf_patient}",
-                template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)", height=400,
-                xaxis_title="VAF", yaxis_title="Impact Score")
-            st.plotly_chart(fig, use_container_width=True)
-
-        # Lollipop : gène × VAF
-        st.markdown("### Gènes par VAF")
-        gene_vaf = dp_vaf.groupby("Gene_symbol").agg(
-            max_VAF=("Allelic_ratio", "max"),
-            mean_VAF=("Allelic_ratio", "mean"),
-            n_variants=("Variant", "count"),
-            max_impact=("impact_score", "max"),
-            best_acmg=("ACMG_class", "first"),
-        ).sort_values("max_VAF", ascending=False).head(30)
-
-        fig = go.Figure()
-        # Lignes verticales (lollipop sticks)
-        for i, (gene, row) in enumerate(gene_vaf.iterrows()):
-            color = ACMG_COLORS.get(row["best_acmg"], "#888")
-            fig.add_trace(go.Scatter(
-                x=[row["max_VAF"]], y=[gene],
-                mode="markers", marker=dict(size=row["max_impact"] * 2.5 + 4, color=color),
-                showlegend=False,
-                hovertemplate=f"<b>{gene}</b><br>Max VAF: {row['max_VAF']:.3f}<br>"
-                    f"Impact: {row['max_impact']:.1f}<br>{row['n_variants']} variant(s)<extra></extra>",
-            ))
-
-        fig.add_vline(x=0.25, line_dash="dash", line_color="#ff6b6b", opacity=0.5,
-                      annotation_text="Clonal")
-        fig.add_vline(x=0.1, line_dash="dash", line_color="#ffa500", opacity=0.4,
-                      annotation_text="Sous-clonal")
-        fig.update_layout(
-            template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            height=max(400, len(gene_vaf) * 22),
-            xaxis_title="VAF max", yaxis_title="",
-            title=f"Gènes mutés — {vaf_patient} (taille = impact score, couleur = ACMG)",
-            margin=dict(l=120))
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Tableau des variants clonaux
-        st.markdown("### 🔴 Variants clonaux (VAF ≥ 0.25)")
-        clonal = dp_vaf[dp_vaf["Allelic_ratio"] >= 0.25].sort_values("Allelic_ratio", ascending=False)
-        if len(clonal) > 0:
-            cl_cols = ["Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect",
-                       "ACMG_class", "Allelic_ratio", "Depth", "CADD_phred", "impact_score"]
-            st.dataframe(clonal[[c for c in cl_cols if c in clonal.columns]].reset_index(drop=True),
-                use_container_width=True,
-                column_config={
-                    "Allelic_ratio": st.column_config.ProgressColumn("VAF", min_value=0, max_value=1, format="%.3f"),
-                    "impact_score": st.column_config.NumberColumn("Impact", format="%.1f"),
-                })
-        else:
-            st.info("Aucun variant clonal (VAF ≥ 0.25) pour ce patient.")
-
-        st.markdown("---")
-
-        # ── COMPARAISON MULTI-PATIENTS ──
-        st.markdown("### Comparaison VAF entre patients")
-
-        # Boxplot VAF par patient
-        fig = px.box(df_vaf, x="Pseudo", y="Allelic_ratio", color="Pseudo",
-            points="outliers", notched=True)
-        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)", height=450,
-            title="Distribution VAF par patient",
-            xaxis_tickangle=-45, margin=dict(b=100),
-            xaxis_title="", yaxis_title="VAF",
-            showlegend=False)
-        fig.add_hline(y=0.25, line_dash="dash", line_color="#ff6b6b", opacity=0.5)
-        fig.add_hline(y=0.1, line_dash="dash", line_color="#ffa500", opacity=0.4)
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Scatter TMB score vs % clonal
-        st.markdown("### Score TMB vs Proportion clonale")
-        fig = px.scatter(df_tmb, x="Score TMB", y="% clonal",
-            text="Patient", size="N_variants", size_max=20,
-            color="VAF_médiane", color_continuous_scale=["#4ecdc4", "#ffa500", "#ff6b6b"],
-            hover_data=["N_gènes", "N_clonal (VAF≥0.25)", "VAF_max"])
-        fig.update_traces(textposition="top center", textfont_size=9)
-        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)", height=500,
-            xaxis_title="Score TMB (N variants × VAF moyenne)",
-            yaxis_title="% de variants clonaux (VAF ≥ 0.25)")
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Export
-        csv_tmb = df_tmb.to_csv(index=False, sep=";")
-        st.download_button("📥 Exporter TMB (CSV)", csv_tmb, "tmb_summary.csv", "text/csv")
-    else:
-        st.warning("Pas assez de variants après filtrage.")
-
-# ═══════════════════════════════════════════════════════
-# CO-OCCURRENCE / CO-EXCLUSION
-# ═══════════════════════════════════════════════════════
-with tab_coocc:
-    st.markdown("## 🔗 Co-occurrence & Co-exclusion")
-    st.markdown(
-        "Analyse des associations entre mutations : quels **gènes** ou **variants** "
-        "tendent à être mutés ensemble (co-occurrence) ou à s'exclure mutuellement ?"
-    )
-
-    coocc_level = st.radio("Niveau d'analyse", ["Par gène", "Par variant"],
-        horizontal=True, help="Gène : un patient porte-t-il une mutation dans le gène ? "
-                              "Variant : un patient porte-t-il exactement ce variant ?")
-
-    st.markdown("### Filtres")
-    cc1, cc2, cc3 = st.columns(3)
-    with cc1:
-        coocc_depth = st.number_input("Profondeur min", value=100, step=50, key="coocc_d")
-    with cc2:
-        coocc_ar = st.number_input("AR min", value=0.05, step=0.01, format="%.2f", key="coocc_ar")
-    with cc3:
-        coocc_min_pat = st.number_input("Fréquence min (patients)", value=3, min_value=2, step=1,
-            help="L'entité doit être présente chez au moins N patients pour être analysée.")
-
-    coocc_exclude_benign = st.checkbox("Exclure Benign / Likely Benign", value=True, key="coocc_ben")
-    coocc_exclude_nonfunc = st.checkbox("Exclure variants non fonctionnels", value=True, key="coocc_nf")
-
-    # Filtrage
-    df_coocc = df_f[(df_f["Depth"] >= coocc_depth) & (df_f["Allelic_ratio"] >= coocc_ar)].copy()
-    if coocc_exclude_benign:
-        df_coocc = df_coocc[~df_coocc["ACMG_class"].isin(["Benign", "Likely Benign"])]
-    if coocc_exclude_nonfunc:
-        df_coocc = df_coocc[~df_coocc["Variant_effect"].isin(NON_FUNCTIONAL_EFFECTS)]
-
-    entity_col = "Gene_symbol" if coocc_level == "Par gène" else "Variant"
-
-    st.markdown(f"**{len(df_coocc):,} variants** après filtrage, **{df_coocc[entity_col].nunique()} {coocc_level.lower().replace('par ', '')}s uniques**")
-
-    if len(df_coocc) > 0 and df_coocc["Pseudo"].nunique() >= 3:
-        with st.spinner("Construction de la matrice binaire..."):
-            binary = compute_cooccurrence_matrix(df_coocc, entity_col, min_patients=coocc_min_pat)
-
-        if binary.shape[1] < 2:
-            st.warning("Pas assez d'entités fréquentes. Réduisez le seuil de fréquence min.")
-        else:
-            st.markdown(f"**{binary.shape[1]} entités** analysées (présentes chez ≥{coocc_min_pat} patients)")
-
-            # ── HEATMAP DE CO-OCCURRENCE ──
-            st.markdown("### Matrice de co-occurrence")
-            # Matrice de Jaccard pour la heatmap
-            n_entities = min(binary.shape[1], 40)  # Limiter pour lisibilité
-            top_entities = binary.sum().sort_values(ascending=False).head(n_entities).index
-            binary_top = binary[top_entities]
-
-            coocc_matrix = binary_top.T.dot(binary_top).astype(float)
-            # Normaliser par Jaccard : |A∩B| / |A∪B|
-            for i in range(len(coocc_matrix)):
-                for j in range(len(coocc_matrix)):
-                    union = int((binary_top.iloc[:, i] | binary_top.iloc[:, j]).sum())
-                    coocc_matrix.iloc[i, j] = coocc_matrix.iloc[i, j] / max(union, 1)
-
-            fig = px.imshow(coocc_matrix, color_continuous_scale="YlOrRd",
-                labels=dict(color="Index Jaccard"), aspect="auto")
-            fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
-                height=max(500, n_entities * 18),
-                margin=dict(l=150, b=150))
-            st.plotly_chart(fig, use_container_width=True)
-
-            # ── TEST DE FISHER ──
-            st.markdown("### Tests de Fisher (paires significatives)")
-            st.markdown(
-                "Test exact de Fisher sur chaque paire : identifie les associations "
-                "statistiquement significatives (p < 0.05 après correction Bonferroni)."
-            )
-
-            max_pairs_fisher = min(binary.shape[1], 60)
-            with st.spinner(f"Tests de Fisher sur {max_pairs_fisher} entités..."):
-                fisher_df = compute_pairwise_fisher(binary[binary.sum().sort_values(ascending=False).head(max_pairs_fisher).index],
-                                                     max_pairs=max_pairs_fisher)
-
-            if len(fisher_df) > 0:
-                # Significatifs
-                sig_fisher = fisher_df[fisher_df["P_adjusted"] < 0.05].copy()
-
-                if len(sig_fisher) > 0:
-                    co_occ = sig_fisher[sig_fisher["Type"] == "Co-occurrence"].head(20)
-                    co_excl = sig_fisher[sig_fisher["Type"] == "Co-exclusion"].head(20)
-
-                    col_o, col_e = st.columns(2)
-
-                    with col_o:
-                        st.markdown("#### 🟢 Co-occurrences significatives")
-                        if len(co_occ) > 0:
-                            display_cols = ["Entity_1", "Entity_2", "Both", "Freq_1", "Freq_2",
-                                           "Odds_Ratio", "P_adjusted"]
-                            st.dataframe(co_occ[display_cols].reset_index(drop=True),
-                                use_container_width=True,
-                                column_config={
-                                    "Odds_Ratio": st.column_config.NumberColumn("OR", format="%.2f"),
-                                    "P_adjusted": st.column_config.NumberColumn("P adj.", format="%.4f"),
-                                })
-                        else:
-                            st.info("Aucune co-occurrence significative.")
-
-                    with col_e:
-                        st.markdown("#### 🔴 Co-exclusions significatives")
-                        if len(co_excl) > 0:
-                            display_cols = ["Entity_1", "Entity_2", "Both", "Freq_1", "Freq_2",
-                                           "Odds_Ratio", "P_adjusted"]
-                            st.dataframe(co_excl[display_cols].reset_index(drop=True),
-                                use_container_width=True,
-                                column_config={
-                                    "Odds_Ratio": st.column_config.NumberColumn("OR", format="%.2f"),
-                                    "P_adjusted": st.column_config.NumberColumn("P adj.", format="%.4f"),
-                                })
-                        else:
-                            st.info("Aucune co-exclusion significative.")
-
-                    # Volcano-like plot
-                    st.markdown("### Volcano plot")
-                    fisher_plot = fisher_df.copy()
-                    fisher_plot["log10_p"] = -np.log10(fisher_plot["P_adjusted"].clip(lower=1e-10))
-                    fisher_plot["log2_OR"] = np.log2(fisher_plot["Odds_Ratio"].clip(lower=0.01, upper=100))
-                    fisher_plot["label"] = fisher_plot["Entity_1"] + " / " + fisher_plot["Entity_2"]
-                    fisher_plot["Significant"] = fisher_plot["P_adjusted"] < 0.05
-
-                    fig = px.scatter(fisher_plot, x="log2_OR", y="log10_p",
-                        color="Significant", color_discrete_map={True: "#ff6b6b", False: "#555"},
-                        hover_data=["Entity_1", "Entity_2", "Both", "Odds_Ratio", "P_adjusted"],
-                        opacity=0.7)
-                    fig.add_vline(x=0, line_dash="dash", line_color="#888", opacity=0.5)
-                    fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="#ffd93d", opacity=0.5,
-                                  annotation_text="p=0.05")
-                    fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-                        paper_bgcolor="rgba(0,0,0,0)", height=500,
-                        xaxis_title="log2(Odds Ratio) ← Co-exclusion | Co-occurrence →",
-                        yaxis_title="-log10(P ajusté)")
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("Aucune paire significative après correction Bonferroni. "
-                            "Essayez de réduire le seuil de fréquence minimum.")
-
-            # ── ONCOPRINT SIMPLIFIÉ ──
-            st.markdown("### Oncoprint")
-            st.markdown("Matrice binaire patient × entité (top entités les plus fréquentes).")
-            n_onco = st.slider("Nombre d'entités à afficher", 10, 50, 20, key="onco_n")
-            top_onco = binary.sum().sort_values(ascending=False).head(n_onco).index
-            onco_data = binary[top_onco].T
-
-            fig = px.imshow(onco_data, color_continuous_scale=["#0a192f", "#64ffda"],
-                labels=dict(x="Patient", y=coocc_level.replace("Par ", ""), color="Muté"),
-                aspect="auto")
-            fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)", height=max(400, n_onco * 20),
-                margin=dict(l=180, b=100), xaxis_tickangle=-90)
-            st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("Pas assez de données après filtrage.")
-
-# ═══════════════════════════════════════════════════════
-# ANALYSE DES COMPLICATIONS (supervisée)
 # ═══════════════════════════════════════════════════════
 with tab_compl:
     st.markdown("## 🎯 Analyse des complications")
@@ -2185,9 +1761,10 @@ with tab_compl:
     st.markdown("## 🧪 Résultats de l'analyse d'association")
 
     # Deux sous-onglets pour les 2 niveaux
-    lvl_var, lvl_gene, lvl_pw, lvl_sig = st.tabs(
+    lvl_var, lvl_gene, lvl_pw, lvl_sig, lvl_vaf_loh = st.tabs(
         ["📍 Niveau variant", "🧬 Niveau gène (Patho/LP/VUS)",
-         "🔬 Niveau pathway", "🔥 Signatures par complication"]
+         "🔬 Niveau pathway", "🔥 Signatures par complication", 
+         "🧬 Profil VAF & LOH"]
     )
 
     # ─── NIVEAU VARIANT ───
@@ -3070,6 +2647,874 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
         """
     )
 
+
+    # ─── PROFIL VAF & LOH ───
+    with lvl_vaf_loh:
+        st.markdown("### 🧬 Profil VAF, LOH & TMB")
+        st.markdown(
+            "Analyse détaillée des **fréquences alléliques (VAF)**, détection de **perte d'hétérozygotie (LOH)** "
+            "et calcul du **Tumor Mutational Burden (TMB)** pour chaque patient avec complications."
+        )
+        
+        # Info TMB
+        with st.expander("ℹ️ Comprendre les métriques"):
+            st.markdown("""
+            **VAF (Variant Allele Frequency)** : Proportion de reads portant le variant.
+            - VAF ≈ 0.5 : hétérozygote
+            - VAF ≈ 1.0 : homozygote ou perte d'hétérozygotie (LOH)
+            - VAF < 0.25 : sous-clonal
+            
+            **LOH (Loss of Heterozygosity)** : Perte d'un allèle, détectée par VAF élevée (≥0.9).
+            
+            **TMB (Tumor Mutational Burden)** : Score composite = nombre_variants × VAF_moyenne.
+            Reflète la charge mutationnelle globale pondérée par la fréquence allélique.
+            """)
+        
+        # ── PARAMÈTRES ──
+        st.markdown("#### ⚙️ Paramètres de détection")
+        col_p1, col_p2, col_p3 = st.columns(3)
+        
+        with col_p1:
+            vaf_loh_threshold = st.slider(
+                "Seuil VAF pour LOH suspectée",
+                min_value=0.7, max_value=1.0, value=0.9, step=0.05,
+                help="Variants avec VAF ≥ ce seuil sont considérés comme potentiellement homozygotes/LOH"
+            )
+        
+        with col_p2:
+            vaf_clonal_threshold = st.slider(
+                "Seuil VAF clonal",
+                min_value=0.15, max_value=0.5, value=0.25, step=0.05,
+                help="Variants avec VAF ≥ ce seuil sont considérés comme clonaux"
+            )
+        
+        with col_p3:
+            min_depth_loh = st.number_input(
+                "Profondeur minimale pour LOH",
+                min_value=50, max_value=500, value=150, step=50,
+                help="Profondeur de séquençage minimale pour avoir confiance en la détection de LOH"
+            )
+        
+        # ── FILTRAGE DES DONNÉES ──
+        # Utiliser df_c (déjà filtré) pour l'analyse
+        df_vaf_analysis = df_c.copy()
+        
+        # Ajouter les statuts VAF
+        df_vaf_analysis['VAF_status'] = pd.cut(
+            df_vaf_analysis['Allelic_ratio'],
+            bins=[0, 0.1, vaf_clonal_threshold, vaf_loh_threshold, 1.0],
+            labels=['Mineur', 'Sous-clonal', 'Clonal', 'LOH suspectée'],
+            include_lowest=True
+        )
+        
+        # Identifier les variants LOH
+        df_vaf_analysis['Is_LOH'] = (
+            (df_vaf_analysis['Allelic_ratio'] >= vaf_loh_threshold) &
+            (df_vaf_analysis['Depth'] >= min_depth_loh)
+        )
+        
+        # ── CALCULS PAR PATIENT ──
+        patient_vaf_stats = []
+        
+        for pseudo in eligible_patients:
+            dp = df_vaf_analysis[df_vaf_analysis['Pseudo'] == pseudo]
+            
+            if len(dp) == 0:
+                continue
+            
+            # Statut complication
+            has_compl = df_pat_elig.loc[pseudo, 'Complication_any'] == 1 if pseudo in df_pat_elig.index else False
+            compl_types = []
+            if has_compl:
+                for compl_type in avail_compl:
+                    try:
+                        if df_pat_clin.loc[pseudo, compl_type] == 1:
+                            compl_types.append(compl_type)
+                    except:
+                        pass
+            
+            # Statistiques VAF
+            vafs = dp['Allelic_ratio']
+            
+            # Comptage LOH
+            n_loh = dp['Is_LOH'].sum()
+            pct_loh = (n_loh / len(dp) * 100) if len(dp) > 0 else 0
+            
+            # TMB
+            tmb = len(dp) * vafs.mean()
+            
+            # Statistiques par statut
+            status_counts = dp['VAF_status'].value_counts()
+            
+            patient_vaf_stats.append({
+                'Patient': pseudo,
+                'Has_complication': has_compl,
+                'Complication_types': ', '.join(compl_types) if compl_types else 'Aucune',
+                'N_variants': len(dp),
+                'VAF_median': vafs.median(),
+                'VAF_mean': vafs.mean(),
+                'VAF_max': vafs.max(),
+                'VAF_IQR': vafs.quantile(0.75) - vafs.quantile(0.25),
+                'N_LOH': int(n_loh),
+                'Pct_LOH': pct_loh,
+                'N_mineur': int(status_counts.get('Mineur', 0)),
+                'N_subclonal': int(status_counts.get('Sous-clonal', 0)),
+                'N_clonal': int(status_counts.get('Clonal', 0)),
+                'Pct_clonal': (status_counts.get('Clonal', 0) / len(dp) * 100) if len(dp) > 0 else 0,
+                'TMB_score': tmb,
+            })
+        
+        df_patient_vaf = pd.DataFrame(patient_vaf_stats)
+        
+        if len(df_patient_vaf) == 0:
+            st.warning("Aucun patient avec variants après filtrage.")
+        else:
+            # Séparer compliqués vs non-compliqués
+            df_compl = df_patient_vaf[df_patient_vaf['Has_complication']]
+            df_no_compl = df_patient_vaf[~df_patient_vaf['Has_complication']]
+            
+            # ══════════════════════════════════════════
+            # 1. VUE D'ENSEMBLE : MÉTRIQUES
+            # ══════════════════════════════════════════
+            st.markdown("---")
+            st.markdown("### 📊 Vue d'ensemble")
+            
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            
+            with col_m1:
+                st.metric(
+                    "Patients avec complications",
+                    len(df_compl),
+                    f"{len(df_compl)/len(df_patient_vaf)*100:.1f}%"
+                )
+            
+            with col_m2:
+                tmb_compl_mean = df_compl['TMB_score'].mean() if len(df_compl) > 0 else 0
+                tmb_no_compl_mean = df_no_compl['TMB_score'].mean() if len(df_no_compl) > 0 else 0
+                delta_tmb = tmb_compl_mean - tmb_no_compl_mean
+                st.metric(
+                    "TMB moyen (compliqués)",
+                    f"{tmb_compl_mean:.1f}",
+                    f"{delta_tmb:+.1f} vs non-compl."
+                )
+            
+            with col_m3:
+                loh_compl_mean = df_compl['N_LOH'].mean() if len(df_compl) > 0 else 0
+                loh_no_compl_mean = df_no_compl['N_LOH'].mean() if len(df_no_compl) > 0 else 0
+                delta_loh = loh_compl_mean - loh_no_compl_mean
+                st.metric(
+                    "LOH moyen (compliqués)",
+                    f"{loh_compl_mean:.1f}",
+                    f"{delta_loh:+.1f} vs non-compl."
+                )
+            
+            with col_m4:
+                vaf_compl_median = df_compl['VAF_median'].median() if len(df_compl) > 0 else 0
+                vaf_no_compl_median = df_no_compl['VAF_median'].median() if len(df_no_compl) > 0 else 0
+                delta_vaf = vaf_compl_median - vaf_no_compl_median
+                st.metric(
+                    "VAF médiane (compliqués)",
+                    f"{vaf_compl_median:.3f}",
+                    f"{delta_vaf:+.3f} vs non-compl."
+                )
+            
+            # ══════════════════════════════════════════
+            # 2. DISTRIBUTION DES VAF
+            # ══════════════════════════════════════════
+            st.markdown("---")
+            st.markdown("### 📈 1. Distribution des VAF")
+            
+            vaf_view_option = st.radio(
+                "Niveau de visualisation",
+                ["Par patient", "Par type de complication", "Comparaison globale"],
+                horizontal=True,
+                key="vaf_view"
+            )
+            
+            if vaf_view_option == "Par patient":
+                st.markdown("#### Distribution VAF par patient (compliqués uniquement)")
+                
+                if len(df_compl) == 0:
+                    st.info("Aucun patient compliqué avec variants.")
+                else:
+                    # Sélection patient
+                    selected_patient = st.selectbox(
+                        "Sélectionner un patient",
+                        df_compl['Patient'].tolist(),
+                        key="vaf_patient_select"
+                    )
+                    
+                    # Données du patient
+                    dp_selected = df_vaf_analysis[df_vaf_analysis['Pseudo'] == selected_patient]
+                    patient_info = df_compl[df_compl['Patient'] == selected_patient].iloc[0]
+                    
+                    # Infos patient
+                    st.markdown(f"**Patient {selected_patient}** — Complications : {patient_info['Complication_types']}")
+                    
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Variants", patient_info['N_variants'])
+                    c2.metric("VAF médiane", f"{patient_info['VAF_median']:.3f}")
+                    c3.metric("LOH détectées", int(patient_info['N_LOH']))
+                    c4.metric("TMB", f"{patient_info['TMB_score']:.1f}")
+                    
+                    # Histogramme VAF
+                    fig = go.Figure()
+                    
+                    fig.add_trace(go.Histogram(
+                        x=dp_selected['Allelic_ratio'],
+                        nbinsx=50,
+                        marker_color='#64ffda',
+                        opacity=0.7,
+                        name='Distribution VAF'
+                    ))
+                    
+                    # Lignes de seuil
+                    fig.add_vline(x=vaf_clonal_threshold, line_dash="dash", line_color="#ffa500",
+                                  annotation_text=f"Clonal ({vaf_clonal_threshold})")
+                    fig.add_vline(x=vaf_loh_threshold, line_dash="dash", line_color="#ff6b6b",
+                                  annotation_text=f"LOH ({vaf_loh_threshold})")
+                    
+                    fig.update_layout(
+                        title=f"Distribution VAF — {selected_patient}",
+                        xaxis_title="Variant Allele Frequency (VAF)",
+                        yaxis_title="Nombre de variants",
+                        template="plotly_dark",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Tableau des variants LOH pour ce patient
+                    if patient_info['N_LOH'] > 0:
+                        st.markdown("##### Variants suspects de LOH")
+                        loh_variants = dp_selected[dp_selected['Is_LOH']][
+                            ['Gene_symbol', 'Variant', 'hgvs.p', 'Allelic_ratio', 'Depth', 
+                             'ACMG_class', 'Putative_impact']
+                        ].sort_values('Allelic_ratio', ascending=False)
+                        
+                        st.dataframe(
+                            loh_variants.reset_index(drop=True),
+                            use_container_width=True,
+                            height=min(400, len(loh_variants) * 35 + 38)
+                        )
+            
+            elif vaf_view_option == "Par type de complication":
+                st.markdown("#### Distribution VAF par type de complication")
+                
+                if len(df_compl) == 0:
+                    st.info("Aucun patient compliqué avec variants.")
+                else:
+                    # Box plots par type de complication
+                    fig = go.Figure()
+                    
+                    for compl_type in avail_compl:
+                        # Patients avec cette complication
+                        patients_with_compl = df_compl[
+                            df_compl['Complication_types'].str.contains(compl_type, na=False)
+                        ]['Patient'].tolist()
+                        
+                        if len(patients_with_compl) > 0:
+                            # VAFs pour ces patients
+                            vafs_compl = df_vaf_analysis[
+                                df_vaf_analysis['Pseudo'].isin(patients_with_compl)
+                            ]['Allelic_ratio']
+                            
+                            fig.add_trace(go.Box(
+                                y=vafs_compl,
+                                name=compl_type,
+                                marker_color={'BO': '#ff6b6b', 'PNP': '#ffa500', 
+                                            'MG': '#ffd93d', 'FDSCS': '#9b59b6'}.get(compl_type, '#888'),
+                                boxmean='sd'
+                            ))
+                    
+                    # Ajouter non-compliqués pour comparaison
+                    if len(df_no_compl) > 0:
+                        vafs_no_compl = df_vaf_analysis[
+                            df_vaf_analysis['Pseudo'].isin(df_no_compl['Patient'])
+                        ]['Allelic_ratio']
+                        
+                        fig.add_trace(go.Box(
+                            y=vafs_no_compl,
+                            name='Non compliqué',
+                            marker_color='#4ecdc4',
+                            boxmean='sd'
+                        ))
+                    
+                    fig.update_layout(
+                        title="Distribution VAF par type de complication",
+                        yaxis_title="Variant Allele Frequency (VAF)",
+                        template="plotly_dark",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        height=500,
+                        showlegend=True
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Statistiques par complication
+                    st.markdown("##### Statistiques VAF par complication")
+                    
+                    stats_compl = []
+                    for compl_type in avail_compl:
+                        patients_with = df_compl[
+                            df_compl['Complication_types'].str.contains(compl_type, na=False)
+                        ]
+                        
+                        if len(patients_with) > 0:
+                            vafs = df_vaf_analysis[
+                                df_vaf_analysis['Pseudo'].isin(patients_with['Patient'])
+                            ]['Allelic_ratio']
+                            
+                            stats_compl.append({
+                                'Complication': compl_type,
+                                'N_patients': len(patients_with),
+                                'VAF_median': vafs.median(),
+                                'VAF_mean': vafs.mean(),
+                                'VAF_std': vafs.std(),
+                                'Pct_clonal': (vafs >= vaf_clonal_threshold).sum() / len(vafs) * 100,
+                                'Pct_LOH': (vafs >= vaf_loh_threshold).sum() / len(vafs) * 100,
+                            })
+                    
+                    if stats_compl:
+                        df_stats_compl = pd.DataFrame(stats_compl)
+                        st.dataframe(
+                            df_stats_compl.style.format({
+                                'VAF_median': '{:.3f}',
+                                'VAF_mean': '{:.3f}',
+                                'VAF_std': '{:.3f}',
+                                'Pct_clonal': '{:.1f}%',
+                                'Pct_LOH': '{:.1f}%'
+                            }),
+                            use_container_width=True
+                        )
+            
+            else:  # Comparaison globale
+                st.markdown("#### Comparaison VAF : Compliqués vs Non-compliqués")
+                
+                # Violin plots
+                fig = go.Figure()
+                
+                if len(df_compl) > 0:
+                    vafs_compl = df_vaf_analysis[
+                        df_vaf_analysis['Pseudo'].isin(df_compl['Patient'])
+                    ]['Allelic_ratio']
+                    
+                    fig.add_trace(go.Violin(
+                        y=vafs_compl,
+                        name='Avec complication',
+                        marker_color='#ff6b6b',
+                        box_visible=True,
+                        meanline_visible=True
+                    ))
+                
+                if len(df_no_compl) > 0:
+                    vafs_no_compl = df_vaf_analysis[
+                        df_vaf_analysis['Pseudo'].isin(df_no_compl['Patient'])
+                    ]['Allelic_ratio']
+                    
+                    fig.add_trace(go.Violin(
+                        y=vafs_no_compl,
+                        name='Sans complication',
+                        marker_color='#4ecdc4',
+                        box_visible=True,
+                        meanline_visible=True
+                    ))
+                
+                fig.update_layout(
+                    title="Distribution VAF : Compliqués vs Non-compliqués",
+                    yaxis_title="Variant Allele Frequency (VAF)",
+                    template="plotly_dark",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    height=500
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # ══════════════════════════════════════════
+            # 3. DÉTECTION LOH
+            # ══════════════════════════════════════════
+            st.markdown("---")
+            st.markdown("### 🔬 2. Détection de perte d'hétérozygotie (LOH)")
+            
+            loh_view = st.radio(
+                "Vue LOH",
+                ["Tableau des LOH", "Heatmap patient × variant", "Distribution par patient"],
+                horizontal=True,
+                key="loh_view"
+            )
+            
+            # Filtrer variants LOH
+            df_loh = df_vaf_analysis[df_vaf_analysis['Is_LOH']].copy()
+            
+            if len(df_loh) == 0:
+                st.info(f"Aucun variant avec LOH suspectée (VAF ≥ {vaf_loh_threshold}, Depth ≥ {min_depth_loh}).")
+            else:
+                st.markdown(f"**{len(df_loh)} variants** avec LOH suspectée chez **{df_loh['Pseudo'].nunique()} patients**")
+                
+                if loh_view == "Tableau des LOH":
+                    st.markdown("#### Tous les variants avec LOH suspectée")
+                    
+                    # Ajouter info complication
+                    df_loh_display = df_loh.copy()
+                    df_loh_display['Has_compl'] = df_loh_display['Pseudo'].map(
+                        lambda p: '✓' if p in df_compl['Patient'].values else '✗'
+                    )
+                    df_loh_display['Compl_types'] = df_loh_display['Pseudo'].map(
+                        lambda p: df_compl[df_compl['Patient'] == p]['Complication_types'].values[0] 
+                        if p in df_compl['Patient'].values else ''
+                    )
+                    
+                    cols_display = ['Pseudo', 'Has_compl', 'Compl_types', 'Gene_symbol', 'Variant', 
+                                   'hgvs.p', 'Allelic_ratio', 'Depth', 'ACMG_class', 'Putative_impact']
+                    cols_display = [c for c in cols_display if c in df_loh_display.columns]
+                    
+                    st.dataframe(
+                        df_loh_display[cols_display].sort_values(['Has_compl', 'Allelic_ratio'], 
+                                                                  ascending=[False, False]).reset_index(drop=True),
+                        use_container_width=True,
+                        height=400,
+                        column_config={
+                            'Allelic_ratio': st.column_config.ProgressColumn(
+                                'VAF',
+                                min_value=0,
+                                max_value=1,
+                                format='%.3f'
+                            )
+                        }
+                    )
+                    
+                    # Export
+                    csv_loh = df_loh_display[cols_display].to_csv(index=False, sep=';')
+                    st.download_button(
+                        "📥 Télécharger tableau LOH (CSV)",
+                        csv_loh,
+                        "loh_variants.csv",
+                        "text/csv",
+                        key="dl_loh_table"
+                    )
+                
+                elif loh_view == "Heatmap patient × variant":
+                    st.markdown("#### Heatmap : Patients × Variants LOH (colorée par VAF)")
+                    
+                    # Limiter aux LOH fréquentes
+                    loh_variant_counts = df_loh.groupby('Variant')['Pseudo'].nunique()
+                    min_carriers_loh = st.slider(
+                        "Nb minimum de patients porteurs",
+                        min_value=1, max_value=max(3, df_loh['Pseudo'].nunique() // 2),
+                        value=1,
+                        key="loh_min_carriers"
+                    )
+                    
+                    freq_loh_variants = loh_variant_counts[loh_variant_counts >= min_carriers_loh].index.tolist()
+                    
+                    if len(freq_loh_variants) == 0:
+                        st.warning(f"Aucun variant LOH présent chez ≥{min_carriers_loh} patients.")
+                    else:
+                        # Limiter à top N
+                        n_show_loh = min(30, len(freq_loh_variants))
+                        top_loh_variants = loh_variant_counts.loc[freq_loh_variants].sort_values(ascending=False).head(n_show_loh).index.tolist()
+                        
+                        # Patients avec au moins une LOH
+                        loh_patients = df_loh['Pseudo'].unique().tolist()
+                        
+                        # Matrice VAF
+                        hm_vaf = pd.DataFrame(0.0, index=top_loh_variants, columns=loh_patients)
+                        
+                        for variant in top_loh_variants:
+                            dv = df_loh[df_loh['Variant'] == variant]
+                            for _, row in dv.iterrows():
+                                if row['Pseudo'] in hm_vaf.columns:
+                                    hm_vaf.loc[variant, row['Pseudo']] = row['Allelic_ratio']
+                        
+                        # Trier colonnes (patients) par complication
+                        def compl_sort_loh(p):
+                            has_c = 1 if p in df_compl['Patient'].values else 0
+                            return (-has_c, p)
+                        
+                        loh_patients_sorted = sorted(loh_patients, key=compl_sort_loh)
+                        hm_vaf = hm_vaf[loh_patients_sorted]
+                        
+                        # Annoter gènes
+                        variant_genes = {}
+                        for v in top_loh_variants:
+                            genes = df_loh[df_loh['Variant'] == v]['Gene_symbol'].unique()
+                            variant_genes[v] = genes[0] if len(genes) > 0 else ''
+                        
+                        # Créer labels
+                        y_labels = [f"{variant_genes.get(v, '')} ({v.split(':')[-1][:20]}...)" 
+                                   for v in top_loh_variants]
+                        
+                        # Figure
+                        fig = go.Figure(go.Heatmap(
+                            z=hm_vaf.values,
+                            x=hm_vaf.columns,
+                            y=y_labels,
+                            colorscale='RdYlGn',
+                            zmin=0, zmax=1,
+                            colorbar_title="VAF",
+                            hovertemplate="Patient: %{x}<br>Variant: %{y}<br>VAF: %{z:.3f}<extra></extra>"
+                        ))
+                        
+                        fig.update_layout(
+                            title=f"Top {n_show_loh} variants LOH par VAF",
+                            template="plotly_dark",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            height=max(500, n_show_loh * 25 + 100),
+                            xaxis_tickangle=-90,
+                            margin=dict(l=200, b=120)
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                else:  # Distribution par patient
+                    st.markdown("#### Nombre de LOH par patient")
+                    
+                    # Bar chart
+                    loh_per_patient = df_loh.groupby('Pseudo').size().reset_index(name='N_LOH')
+                    loh_per_patient = loh_per_patient.sort_values('N_LOH', ascending=False)
+                    
+                    # Ajouter info complication
+                    loh_per_patient['Has_compl'] = loh_per_patient['Pseudo'].map(
+                        lambda p: 'Avec complication' if p in df_compl['Patient'].values else 'Sans complication'
+                    )
+                    
+                    fig = px.bar(
+                        loh_per_patient,
+                        x='Pseudo',
+                        y='N_LOH',
+                        color='Has_compl',
+                        color_discrete_map={'Avec complication': '#ff6b6b', 'Sans complication': '#4ecdc4'},
+                        title="Nombre de variants LOH par patient",
+                        labels={'N_LOH': 'Nombre de LOH', 'Pseudo': 'Patient'}
+                    )
+                    
+                    fig.update_layout(
+                        template="plotly_dark",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        height=400,
+                        xaxis_tickangle=-90
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            # ══════════════════════════════════════════
+            # 4. ANALYSE TMB
+            # ══════════════════════════════════════════
+            st.markdown("---")
+            st.markdown("### 📊 3. Tumor Mutational Burden (TMB)")
+            
+            tmb_view = st.radio(
+                "Vue TMB",
+                ["Comparaison Compl. vs Non-compl.", "TMB par type de complication", "Stratification par TMB"],
+                horizontal=True,
+                key="tmb_view"
+            )
+            
+            if tmb_view == "Comparaison Compl. vs Non-compl.":
+                st.markdown("#### TMB : Patients avec vs sans complication")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Box plot
+                    fig = go.Figure()
+                    
+                    if len(df_compl) > 0:
+                        fig.add_trace(go.Box(
+                            y=df_compl['TMB_score'],
+                            name='Avec complication',
+                            marker_color='#ff6b6b',
+                            boxmean='sd'
+                        ))
+                    
+                    if len(df_no_compl) > 0:
+                        fig.add_trace(go.Box(
+                            y=df_no_compl['TMB_score'],
+                            name='Sans complication',
+                            marker_color='#4ecdc4',
+                            boxmean='sd'
+                        ))
+                    
+                    fig.update_layout(
+                        title="Distribution TMB",
+                        yaxis_title="TMB Score",
+                        template="plotly_dark",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    # Statistiques
+                    st.markdown("##### Statistiques TMB")
+                    
+                    stats_tmb = []
+                    
+                    if len(df_compl) > 0:
+                        stats_tmb.append({
+                            'Groupe': 'Avec complication',
+                            'N': len(df_compl),
+                            'TMB_mean': df_compl['TMB_score'].mean(),
+                            'TMB_median': df_compl['TMB_score'].median(),
+                            'TMB_std': df_compl['TMB_score'].std(),
+                            'TMB_min': df_compl['TMB_score'].min(),
+                            'TMB_max': df_compl['TMB_score'].max(),
+                        })
+                    
+                    if len(df_no_compl) > 0:
+                        stats_tmb.append({
+                            'Groupe': 'Sans complication',
+                            'N': len(df_no_compl),
+                            'TMB_mean': df_no_compl['TMB_score'].mean(),
+                            'TMB_median': df_no_compl['TMB_score'].median(),
+                            'TMB_std': df_no_compl['TMB_score'].std(),
+                            'TMB_min': df_no_compl['TMB_score'].min(),
+                            'TMB_max': df_no_compl['TMB_score'].max(),
+                        })
+                    
+                    if stats_tmb:
+                        df_stats_tmb = pd.DataFrame(stats_tmb)
+                        st.dataframe(
+                            df_stats_tmb.style.format({
+                                'TMB_mean': '{:.2f}',
+                                'TMB_median': '{:.2f}',
+                                'TMB_std': '{:.2f}',
+                                'TMB_min': '{:.2f}',
+                                'TMB_max': '{:.2f}'
+                            }),
+                            use_container_width=True
+                        )
+                        
+                        # Test statistique
+                        if len(df_compl) > 0 and len(df_no_compl) > 0:
+                            from scipy.stats import mannwhitneyu
+                            stat, p_value = mannwhitneyu(
+                                df_compl['TMB_score'],
+                                df_no_compl['TMB_score'],
+                                alternative='two-sided'
+                            )
+                            
+                            st.markdown(f"""
+                            **Test de Mann-Whitney U**  
+                            - Statistique U : {stat:.2f}  
+                            - P-value : {p_value:.4f}  
+                            - Significatif (p<0.05) : {'✓ Oui' if p_value < 0.05 else '✗ Non'}
+                            """)
+            
+            elif tmb_view == "TMB par type de complication":
+                st.markdown("#### TMB par type de complication")
+                
+                # Box plots
+                fig = go.Figure()
+                
+                for compl_type in avail_compl:
+                    patients_with = df_compl[
+                        df_compl['Complication_types'].str.contains(compl_type, na=False)
+                    ]
+                    
+                    if len(patients_with) > 0:
+                        fig.add_trace(go.Box(
+                            y=patients_with['TMB_score'],
+                            name=compl_type,
+                            marker_color={'BO': '#ff6b6b', 'PNP': '#ffa500', 
+                                        'MG': '#ffd93d', 'FDSCS': '#9b59b6'}.get(compl_type, '#888'),
+                            boxmean='sd'
+                        ))
+                
+                # Ajouter non-compliqués
+                if len(df_no_compl) > 0:
+                    fig.add_trace(go.Box(
+                        y=df_no_compl['TMB_score'],
+                        name='Non compliqué',
+                        marker_color='#4ecdc4',
+                        boxmean='sd'
+                    ))
+                
+                fig.update_layout(
+                    title="TMB par type de complication",
+                    yaxis_title="TMB Score",
+                    template="plotly_dark",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    height=500
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Tableau statistiques
+                st.markdown("##### Statistiques par complication")
+                
+                stats_tmb_compl = []
+                for compl_type in avail_compl:
+                    patients_with = df_compl[
+                        df_compl['Complication_types'].str.contains(compl_type, na=False)
+                    ]
+                    
+                    if len(patients_with) > 0:
+                        stats_tmb_compl.append({
+                            'Complication': compl_type,
+                            'N_patients': len(patients_with),
+                            'TMB_mean': patients_with['TMB_score'].mean(),
+                            'TMB_median': patients_with['TMB_score'].median(),
+                            'TMB_std': patients_with['TMB_score'].std(),
+                        })
+                
+                if stats_tmb_compl:
+                    df_stats_tmb_compl = pd.DataFrame(stats_tmb_compl)
+                    st.dataframe(
+                        df_stats_tmb_compl.style.format({
+                            'TMB_mean': '{:.2f}',
+                            'TMB_median': '{:.2f}',
+                            'TMB_std': '{:.2f}'
+                        }),
+                        use_container_width=True
+                    )
+            
+            else:  # Stratification par TMB
+                st.markdown("#### Stratification des patients par niveau de TMB")
+                
+                # Définir seuils TMB
+                tmb_threshold_low = st.slider(
+                    "Seuil TMB faible/moyen",
+                    min_value=0.0,
+                    max_value=df_patient_vaf['TMB_score'].quantile(0.75),
+                    value=df_patient_vaf['TMB_score'].quantile(0.33),
+                    step=0.5,
+                    key="tmb_thresh_low"
+                )
+                
+                tmb_threshold_high = st.slider(
+                    "Seuil TMB moyen/élevé",
+                    min_value=tmb_threshold_low,
+                    max_value=df_patient_vaf['TMB_score'].max(),
+                    value=df_patient_vaf['TMB_score'].quantile(0.67),
+                    step=0.5,
+                    key="tmb_thresh_high"
+                )
+                
+                # Catégoriser
+                df_patient_vaf['TMB_category'] = pd.cut(
+                    df_patient_vaf['TMB_score'],
+                    bins=[0, tmb_threshold_low, tmb_threshold_high, np.inf],
+                    labels=['TMB faible', 'TMB moyen', 'TMB élevé'],
+                    include_lowest=True
+                )
+                
+                # Tableau croisé TMB × Complication
+                cross_tmb = pd.crosstab(
+                    df_patient_vaf['TMB_category'],
+                    df_patient_vaf['Has_complication'],
+                    margins=True,
+                    margins_name='Total'
+                )
+                cross_tmb.columns = ['Sans complication', 'Avec complication', 'Total']
+                
+                st.markdown("##### Répartition TMB × Complication")
+                st.dataframe(cross_tmb, use_container_width=True)
+                
+                # Proportions
+                st.markdown("##### Proportion de complications par niveau de TMB")
+                
+                prop_compl_by_tmb = []
+                for cat in ['TMB faible', 'TMB moyen', 'TMB élevé']:
+                    subset = df_patient_vaf[df_patient_vaf['TMB_category'] == cat]
+                    if len(subset) > 0:
+                        n_compl = subset['Has_complication'].sum()
+                        prop = n_compl / len(subset) * 100
+                        prop_compl_by_tmb.append({
+                            'Catégorie TMB': cat,
+                            'N_patients': len(subset),
+                            'N_avec_compl': int(n_compl),
+                            'Pct_compl': prop
+                        })
+                
+                if prop_compl_by_tmb:
+                    df_prop_tmb = pd.DataFrame(prop_compl_by_tmb)
+                    
+                    # Bar chart
+                    fig = px.bar(
+                        df_prop_tmb,
+                        x='Catégorie TMB',
+                        y='Pct_compl',
+                        text='Pct_compl',
+                        title="% de patients avec complication par niveau de TMB",
+                        labels={'Pct_compl': '% avec complication'},
+                        color='Catégorie TMB',
+                        color_discrete_map={
+                            'TMB faible': '#4ecdc4',
+                            'TMB moyen': '#ffd93d',
+                            'TMB élevé': '#ff6b6b'
+                        }
+                    )
+                    
+                    fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+                    fig.update_layout(
+                        template="plotly_dark",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        height=400,
+                        showlegend=False
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.dataframe(
+                        df_prop_tmb.style.format({'Pct_compl': '{:.1f}%'}),
+                        use_container_width=True
+                    )
+            
+            # ══════════════════════════════════════════
+            # EXPORT
+            # ══════════════════════════════════════════
+            st.markdown("---")
+            st.markdown("### 📥 Export des données")
+            
+            col_e1, col_e2, col_e3 = st.columns(3)
+            
+            with col_e1:
+                csv_patient_vaf = df_patient_vaf.to_csv(index=False, sep=';')
+                st.download_button(
+                    "📥 Stats VAF par patient (CSV)",
+                    csv_patient_vaf,
+                    "patient_vaf_stats.csv",
+                    "text/csv",
+                    key="dl_vaf_stats",
+                    use_container_width=True
+                )
+            
+            with col_e2:
+                if len(df_loh) > 0:
+                    csv_loh_export = df_loh.to_csv(index=False, sep=';')
+                    st.download_button(
+                        "📥 Variants LOH (CSV)",
+                        csv_loh_export,
+                        "loh_variants_all.csv",
+                        "text/csv",
+                        key="dl_loh_all",
+                        use_container_width=True
+                    )
+            
+            with col_e3:
+                csv_tmb = df_patient_vaf[['Patient', 'Has_complication', 'Complication_types', 
+                                          'N_variants', 'TMB_score']].to_csv(index=False, sep=';')
+                st.download_button(
+                    "📥 TMB par patient (CSV)",
+                    csv_tmb,
+                    "tmb_scores.csv",
+                    "text/csv",
+                    key="dl_tmb",
+                    use_container_width=True
+                )
+
+
     # ── EXPORT PDF ──
     st.markdown("---")
     st.markdown("### 📄 Export du rapport complet")
@@ -3452,382 +3897,3 @@ with tab_qc:
 # ═══════════════════════════════════════════════════════
 # CLUSTERING + PATHWAYS + INTERPRÉTATION
 # ═══════════════════════════════════════════════════════
-with tab_clust:
-    st.markdown("## 🔬 Clustering des patients")
-    st.markdown(
-        "Signatures **génomiques**, **cliniques** et **pathways** combinées. "
-        "UMAP + clustering, interprétation statistique et IA."
-    )
-
-    if df_f["Pseudo"].nunique() < 5:
-        st.warning("Au moins 5 patients nécessaires."); st.stop()
-
-    # ── FILTRES QUALITÉ ──
-    st.markdown("### 🧹 Filtres qualité (pré-clustering)")
-    qc1, qc2, qc3, qc4 = st.columns(4)
-    with qc1:
-        cl_depth = st.number_input("Profondeur min", value=100, step=50, key="cld")
-    with qc2:
-        cl_ar = st.number_input("AR min", value=0.05, step=0.01, format="%.2f", key="cla")
-    with qc3:
-        cl_af = st.number_input("gnomAD NFE max", value=0.01, step=0.005, format="%.3f", key="clf")
-    with qc4:
-        cl_excl_ben = st.checkbox("Exclure Benign/LB", value=True, key="clb")
-
-    excluded_effects = st.multiselect("Types à exclure", sorted(NON_FUNCTIONAL_EFFECTS),
-        default=sorted(NON_FUNCTIONAL_EFFECTS), key="cl_eff")
-
-    df_clust = df_f[
-        (df_f["Depth"] >= cl_depth) & (df_f["Allelic_ratio"] >= cl_ar) &
-        (df_f["gnomad_exomes_NFE_AF"].fillna(0) <= cl_af) &
-        (~df_f["Variant_effect"].isin(excluded_effects))
-    ].copy()
-    if cl_excl_ben:
-        df_clust = df_clust[~df_clust["ACMG_class"].isin(["Benign", "Likely Benign"])]
-
-    n_before, n_after = len(df_f), len(df_clust)
-    n_pat_after = df_clust["Pseudo"].nunique()
-
-    qm1, qm2, qm3, qm4 = st.columns(4)
-    qm1.metric("Avant filtre", f"{n_before:,}")
-    qm2.metric("Après filtre", f"{n_after:,}")
-    qm3.metric("% conservés", f"{n_after/max(n_before,1)*100:.1f}%")
-    qm4.metric("Patients", n_pat_after)
-
-    if n_pat_after < 5:
-        st.error("< 5 patients après filtrage."); st.stop()
-
-    # ── PARAMÈTRES CLUSTERING ──
-    st.markdown("---")
-    st.markdown("### ⚙️ Paramètres")
-
-    # ── OPTION CLUSTERING 2 ÉTAPES ──
-    two_step = st.checkbox("🔬 Clustering en 2 étapes (recommandé)", value=True,
-        help="Étape 1 : exclut automatiquement les patients suspects FFPE (VAF médiane très basse) "
-             "pour éviter que le bruit de dégradation ne pollue les groupements biologiques. "
-             "Étape 2 : clustering des patients fiables uniquement.")
-
-    if two_step:
-        st.markdown(
-            "> **Mode 2 étapes** : les patients dont la VAF médiane (sur variants filtrés) "
-            "est inférieure au seuil sont isolés dans un groupe **« Suspect FFPE »** avant le clustering."
-        )
-        ts1, ts2 = st.columns(2)
-        with ts1:
-            vaf_threshold = st.number_input("Seuil VAF médiane (suspect FFPE)",
-                value=0.03, step=0.005, format="%.3f", key="vaf_thr",
-                help="Patients avec VAF médiane < seuil → exclus du clustering biologique")
-        with ts2:
-            min_variants_threshold = st.number_input("Nb variants min par patient",
-                value=5, step=1, key="min_var_thr",
-                help="Patients avec trop peu de variants → exclus (échecs techniques)")
-
-        # Identifier les suspects
-        patient_vaf_stats = df_clust.groupby("Pseudo").agg(
-            vaf_med=("Allelic_ratio", "median"),
-            n_var=("Variant", "count"),
-        )
-        suspect_ffpe = patient_vaf_stats[patient_vaf_stats["vaf_med"] < vaf_threshold].index.tolist()
-        too_few = patient_vaf_stats[patient_vaf_stats["n_var"] < min_variants_threshold].index.tolist()
-        excluded_patients = list(set(suspect_ffpe + too_few))
-        reliable_patients = [p for p in df_clust["Pseudo"].unique() if p not in excluded_patients]
-
-        ec1, ec2, ec3 = st.columns(3)
-        ec1.metric("Patients fiables", len(reliable_patients))
-        ec2.metric("Suspects FFPE", len(suspect_ffpe))
-        ec3.metric("Trop peu de variants", len(too_few))
-
-        if suspect_ffpe:
-            with st.expander(f"⚠️ {len(excluded_patients)} patients exclus du clustering biologique"):
-                for p in sorted(excluded_patients):
-                    stats = patient_vaf_stats.loc[p]
-                    reasons = []
-                    if p in suspect_ffpe: reasons.append(f"VAF médiane={stats['vaf_med']:.3f}")
-                    if p in too_few: reasons.append(f"N variants={int(stats['n_var'])}")
-                    st.markdown(f"- **{p}** : {', '.join(reasons)}")
-
-        df_clust_bio = df_clust[df_clust["Pseudo"].isin(reliable_patients)].copy()
-
-        if len(reliable_patients) < 5:
-            st.error("< 5 patients fiables. Abaissez le seuil VAF."); st.stop()
-    else:
-        df_clust_bio = df_clust.copy()
-        excluded_patients = []
-
-    cp1, cp2, cp3, cp4 = st.columns(4)
-    with cp1: use_gen = st.checkbox("Génomique", True)
-    with cp2: use_clin = st.checkbox("Clinique", True)
-    with cp3: use_pw = st.checkbox("Pathways", value=pathways_dict is not None,
-        disabled=pathways_dict is None,
-        help="Nécessite un fichier GMT chargé dans la sidebar.")
-    with cp4: top_n = st.slider("Top N gènes", 10, 50, 30, 5)
-
-    cc1, cc2 = st.columns(2)
-    with cc1: method = st.selectbox("Méthode", ["Hiérarchique (Ward)", "K-Means"])
-    with cc2: n_clust = st.slider("Nb clusters", 2, 8, 5)
-
-    cu1, cu2 = st.columns(2)
-    with cu1: n_neigh = st.slider("UMAP n_neighbors", 3, 30, 10)
-    with cu2: m_dist = st.slider("UMAP min_dist", 0.0, 1.0, 0.3, 0.05)
-
-    if not use_gen and not use_clin and not use_pw:
-        st.warning("Sélectionnez au moins un type de features."); st.stop()
-
-    # ── BUILD & CLUSTER ──
-    with st.spinner("Construction matrice..."):
-        df_feat = build_patient_features(df_clust_bio, use_gen, use_clin,
-            use_pathways=use_pw and pathways_dict is not None,
-            top_n_genes=top_n, pathways_dict=pathways_dict)
-
-    st.markdown(f"**{df_feat.shape[0]} patients × {df_feat.shape[1]} features**")
-
-    # Afficher le détail des features
-    with st.expander("📋 Détail des features utilisées"):
-        feat_types = {"Génomique (proportions)": [c for c in df_feat.columns if c.startswith("pct_")],
-                      "Génomique (scores)": [c for c in df_feat.columns if c.startswith("impact_score") or c.startswith("median_") or c.startswith("mean_") or c == "n_unique_genes"],
-                      "VAF / Clonalité": [c for c in df_feat.columns if c.startswith("vaf_") or c.startswith("pct_clonal") or c.startswith("pct_subclonal") or c.startswith("pct_minor") or c in ["clonal_ratio", "tmb_score"]],
-                      "Gènes (binaire)": [c for c in df_feat.columns if c.startswith("gene_")],
-                      "Gènes (score impact)": [c for c in df_feat.columns if c.startswith("genescore_")],
-                      "Pathways (%)": [c for c in df_feat.columns if c.startswith("pw_pct_")],
-                      "Pathways (score)": [c for c in df_feat.columns if c.startswith("pw_score_")],
-                      "Clinique": [c for c in df_feat.columns if c in ["Histo_HV", "Histo_mixed"] + CLINICAL_COLS]}
-        for cat, cols in feat_types.items():
-            if cols: st.markdown(f"- **{cat}** : {len(cols)} features")
-
-    scaler = StandardScaler()
-    X = scaler.fit_transform(df_feat)
-
-    with st.spinner("UMAP..."):
-        nn = min(n_neigh, len(df_feat) - 1)
-        emb = umap.UMAP(n_components=2, n_neighbors=nn, min_dist=m_dist,
-                         random_state=42).fit_transform(X)
-
-    with st.spinner("Clustering..."):
-        if method == "K-Means":
-            mdl = KMeans(n_clusters=n_clust, random_state=42, n_init=10)
-        else:
-            mdl = AgglomerativeClustering(n_clusters=n_clust, linkage="ward")
-        labs = mdl.fit_predict(X)
-        sil = silhouette_score(X, labs) if len(set(labs)) > 1 else 0
-
-    cluster_labels = [f"Cluster {l}" for l in labs]
-    df_u = pd.DataFrame({"UMAP_1": emb[:, 0], "UMAP_2": emb[:, 1],
-        "Cluster": cluster_labels, "Patient": df_feat.index})
-    for col in df_feat.columns:
-        if (col.startswith("pct_") or col.startswith("median_") or col.startswith("mean_")
-            or col.startswith("impact_score") or col.startswith("pw_pct_")
-            or col.startswith("vaf_") or col.startswith("tmb_")
-            or col in ["n_unique_genes", "clonal_ratio", "Histo_HV", "Histo_mixed",
-                       "Complication", "Chirurgie", "Recidive", "BO", "PNP", "MG", "FDSCS"]):
-            df_u[col] = df_feat[col].values
-
-    # Add excluded patients as "Suspect FFPE" cluster if two-step mode
-    if two_step and excluded_patients:
-        for pat in excluded_patients:
-            df_u = pd.concat([df_u, pd.DataFrame([{
-                "UMAP_1": np.nan, "UMAP_2": np.nan,
-                "Cluster": "⚠️ Suspect FFPE", "Patient": pat,
-            }])], ignore_index=True)
-
-    ccols = px.colors.qualitative.Bold[:n_clust]
-    st.markdown("---")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Clusters", n_clust); m2.metric("Silhouette", f"{sil:.3f}"); m3.metric("Features", df_feat.shape[1])
-
-    # ── UMAP ──
-    st.markdown("### Projection UMAP")
-    hover_extra = [c for c in ["pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS",
-                               "vaf_median", "pct_clonal", "tmb_score",
-                               "impact_score_mean", "n_unique_genes"] if c in df_u.columns]
-    fig = px.scatter(df_u, x="UMAP_1", y="UMAP_2", color="Cluster", text="Patient",
-        hover_data=["Patient", "Cluster"] + hover_extra, color_discrete_sequence=ccols)
-    fig.update_traces(textposition="top center", textfont_size=10, marker_size=12)
-    fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)", height=600)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # ── DENDROGRAMME ──
-    if method == "Hiérarchique (Ward)":
-        st.markdown("### Dendrogramme")
-        Z = linkage(X, method="ward")
-        fig_d = ff.create_dendrogram(X, labels=df_feat.index.tolist(), linkagefun=lambda x: Z,
-            color_threshold=Z[-(n_clust-1), 2] if n_clust > 1 else 0)
-        fig_d.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)", height=400, xaxis_tickangle=-90, margin=dict(b=120))
-        st.plotly_chart(fig_d, use_container_width=True)
-
-    # ── PROFIL CLUSTERS ──
-    st.markdown("### Profil des clusters")
-    df_fc = df_feat.copy()
-    df_fc["Cluster"] = cluster_labels
-
-    key_gen = [c for c in df_fc.columns if c in [
-        "pct_Pathogenic", "pct_Likely Pathogenic", "pct_VUS", "pct_Likely Benign", "pct_Benign",
-        "pct_impact_high", "pct_impact_moderate", "pct_impact_low",
-        "pct_missensevariant", "pct_frameshiftvariant", "pct_stopgained",
-        "impact_score_mean", "impact_score_max", "pct_high_impact_score",
-        "median_CADD", "mean_gnomAD_AF", "n_unique_genes",
-        "vaf_median", "vaf_mean", "vaf_iqr", "pct_clonal", "pct_subclonal",
-        "pct_minor", "clonal_ratio", "tmb_score"]]
-    key_clin = [c for c in df_fc.columns if c in [
-        "Histo_HV", "Histo_mixed", "Complication", "Chirurgie",
-        "Recidive", "BO", "PNP", "MG", "FDSCS"]]
-    key_pw = [c for c in df_fc.columns if c.startswith("pw_pct_")][:15]  # Top 15 pathways
-    key_feat = (key_gen if use_gen else []) + (key_clin if use_clin else []) + (key_pw if use_pw else [])
-
-    if key_feat:
-        cp = df_fc.groupby("Cluster")[key_feat].mean().round(2)
-        fig = px.imshow(cp.T, color_continuous_scale="YlOrRd", aspect="auto",
-            labels=dict(x="Cluster", y="Feature", color="Moyenne"), text_auto=".1f")
-        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)", height=max(500, len(key_feat)*22), margin=dict(l=250))
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ── BARPLOTS ──
-    if use_clin and key_clin:
-        st.markdown("### Profil clinique")
-        cm = df_fc.groupby("Cluster")[key_clin].mean()
-        fig = px.bar(cm.reset_index().melt(id_vars="Cluster"), x="variable", y="value",
-            color="Cluster", barmode="group", color_discrete_sequence=ccols)
-        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)", height=450, title="Profil clinique moyen")
-        st.plotly_chart(fig, use_container_width=True)
-
-    if use_gen:
-        acmg_c = [f"pct_{c}" for c in ACMG_ORDER if f"pct_{c}" in df_fc.columns]
-        if acmg_c:
-            st.markdown("### Profil ACMG")
-            am = df_fc.groupby("Cluster")[acmg_c].mean()
-            am.columns = [c.replace("pct_", "") for c in am.columns]
-            fig = go.Figure()
-            for cls in am.columns:
-                fig.add_trace(go.Bar(name=cls, x=am.index, y=am[cls],
-                    marker_color=ACMG_COLORS.get(cls, "#888")))
-            fig.update_layout(barmode="stack", template="plotly_dark",
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=450,
-                title="ACMG par cluster (%)", yaxis_title="% moyen")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # ── TOP PATHWAYS PAR CLUSTER ──
-    if use_pw and pathways_dict and key_pw:
-        st.markdown("### Top pathways par cluster")
-        pw_means = df_fc.groupby("Cluster")[key_pw].mean()
-        pw_means.columns = [c.replace("pw_pct_", "") for c in pw_means.columns]
-        fig = px.imshow(pw_means.T, color_continuous_scale=["#0a192f", "#ff6b6b"],
-            labels=dict(x="Cluster", y="Pathway", color="% muté"), aspect="auto", text_auto=".1f")
-        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)", height=max(400, len(key_pw)*25), margin=dict(l=280))
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ── INTERPRÉTATION STATISTIQUE ──
-    st.markdown("---")
-    st.markdown("## 🧠 Interprétation des clusters")
-
-    if key_feat:
-        interpretations = compute_cluster_interpretation(df_feat, cluster_labels, key_feat)
-        labels_map = {cid: interp["patients"] for cid, interp in interpretations.items()}
-        gene_sigs = get_gene_signature_per_cluster(df_clust_bio, labels_map)
-
-        st.markdown("### 📊 Interprétation statistique")
-        for cid in sorted(interpretations.keys()):
-            interp = interpretations[cid]
-            with st.expander(f"🔹 {cid} — {interp['n_patients']} patients ({', '.join(interp['patients'])})", expanded=True):
-                sig = interp["significant"]
-                if len(sig) > 0:
-                    enriched = sig[sig > 0]
-                    depleted = sig[sig < 0]
-                    ce, cd = st.columns(2)
-                    with ce:
-                        st.markdown("**🔺 Enrichi**")
-                        for f, z in enriched.items():
-                            label = FEATURE_LABELS.get(f, f.replace("pw_pct_", "🔬 ").replace("pct_", "").replace("_", " "))
-                            st.markdown(f'<span class="feat-up">▲ {label}</span> : '
-                                f'{interp["cluster_mean"][f]:.2f} vs {interp["global_mean"][f]:.2f} (z={z:+.2f})',
-                                unsafe_allow_html=True)
-                    with cd:
-                        st.markdown("**🔻 Réduit**")
-                        for f, z in depleted.items():
-                            label = FEATURE_LABELS.get(f, f.replace("pw_pct_", "🔬 ").replace("pct_", "").replace("_", " "))
-                            st.markdown(f'<span class="feat-down">▼ {label}</span> : '
-                                f'{interp["cluster_mean"][f]:.2f} vs {interp["global_mean"][f]:.2f} (z={z:+.2f})',
-                                unsafe_allow_html=True)
-                else:
-                    st.info("Aucune feature significativement discriminante.")
-
-                if cid in gene_sigs:
-                    gs = gene_sigs[cid]
-                    cg, ce2 = st.columns(2)
-                    with cg:
-                        if len(gs["pathogenic_genes"]) > 0:
-                            st.markdown("**🧬 Gènes pathogènes :**")
-                            for g, c in gs["pathogenic_genes"].head(5).items():
-                                st.markdown(f"- **{g}** : {c}")
-                    with ce2:
-                        if len(gs["enriched_genes"]) > 0:
-                            st.markdown("**📈 Gènes enrichis :**")
-                            for g, r in gs["enriched_genes"].head(5).items():
-                                st.markdown(f"- **{g}** : ×{r:.1f}")
-
-        # ── INTERPRÉTATION IA ──
-        st.markdown("---")
-        st.markdown("### 🤖 Interprétation IA")
-        if not ANTHROPIC_AVAILABLE:
-            st.warning("Package `anthropic` non installé. Ajoutez-le à requirements.txt.")
-        elif not api_key:
-            st.info("💡 Entrez votre clé API Anthropic dans la sidebar pour activer l'interprétation IA.")
-        else:
-            if st.button("🧠 Lancer l'interprétation IA", type="primary", use_container_width=True):
-                with st.spinner("Claude analyse vos clusters..."):
-                    try:
-                        prompt = build_ai_prompt(interpretations, gene_sigs, n_clust)
-                        ai_resp = call_anthropic_api(prompt, api_key)
-                        st.markdown(f'<div class="ai-interpretation"><h4>🤖 Analyse</h4>{ai_resp}</div>',
-                            unsafe_allow_html=True)
-                        st.session_state["ai_interpretation"] = ai_resp
-                    except Exception as e:
-                        st.error(f"Erreur API : {e}")
-            elif "ai_interpretation" in st.session_state:
-                st.markdown(f'<div class="ai-interpretation"><h4>🤖 Analyse (précédente)</h4>'
-                    f'{st.session_state["ai_interpretation"]}</div>', unsafe_allow_html=True)
-
-    st.markdown("### Export")
-    exp_c1, exp_c2 = st.columns(2)
-
-    with exp_c1:
-        exp = df_u[["Patient", "Cluster", "UMAP_1", "UMAP_2"]].to_csv(index=False, sep=";")
-        st.download_button("📥 Clusters (CSV)", exp, "clusters.csv", "text/csv",
-                           use_container_width=True)
-
-    with exp_c2:
-        if st.button("📊 Générer rapport PDF complet", type="primary", use_container_width=True):
-            with st.spinner("Génération du rapport PDF (peut prendre 30s)..."):
-                try:
-                    pdf_bytes = generate_cluster_report(
-                        df_clust=df_clust_bio if two_step else df_clust,
-                        df_feat=df_feat,
-                        cluster_labels=cluster_labels,
-                        interpretations=interpretations,
-                        gene_sigs=gene_sigs,
-                        sil_score=sil,
-                        method_name=method,
-                        key_feat=key_feat,
-                        excluded_patients=excluded_patients if two_step else [],
-                        pathways_dict=pathways_dict,
-                    )
-                    st.session_state["pdf_report"] = pdf_bytes
-                    st.success("✅ Rapport généré !")
-                except Exception as e:
-                    st.error(f"Erreur lors de la génération du rapport : {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-
-    if "pdf_report" in st.session_state:
-        st.download_button("📥 Télécharger le rapport PDF",
-            st.session_state["pdf_report"],
-            "rapport_clustering.pdf", "application/pdf",
-            use_container_width=True)
-
-# Footer
-st.markdown("---")
-st.markdown('<p style="text-align:center;color:#4a5568;font-size:0.85rem;">'
-    '🧬 Variant Explorer v4.0 — Données locales uniquement</p>', unsafe_allow_html=True)
