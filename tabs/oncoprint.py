@@ -436,7 +436,7 @@ def render(df_f, df, pathways_dict, api_key):
                 legend_html += f'<span style="color:{color}">⬛ {label}</span> &nbsp; '
             
             # Afficher la figure
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Légende sous le graphe
             st.markdown(legend_html, unsafe_allow_html=True)
@@ -500,7 +500,7 @@ def render(df_f, df, pathways_dict, api_key):
             
             st.dataframe(
                 df_summary,
-                use_container_width=True,
+                width='stretch',
                 height=min(600, len(df_summary) * 35 + 38)
             )
             
@@ -517,7 +517,7 @@ def render(df_f, df, pathways_dict, api_key):
                     csv_summary,
                     "oncoprint_summary.csv",
                     "text/csv",
-                    use_container_width=True
+                    width='stretch'
                 )
             
             with col_e2:
@@ -530,7 +530,7 @@ def render(df_f, df, pathways_dict, api_key):
                     csv_matrix,
                     "oncoprint_matrix.csv",
                     "text/csv",
-                    use_container_width=True
+                    width='stretch'
                 )
 
 

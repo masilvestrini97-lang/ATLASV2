@@ -36,7 +36,7 @@ def render(df_f, df, pathways_dict, api_key):
             horizontal=True,
         )
     with sc2:
-        if st.button("🗑️ Vider cache HPO", use_container_width=True):
+        if st.button("🗑️ Vider cache HPO", width='stretch'):
             clear_api_cache("monarch_hpo")
             st.success("Cache Monarch vide.")
 
@@ -65,7 +65,7 @@ def render(df_f, df, pathways_dict, api_key):
             f"(API rate-limited a ~2 req/s). Les appels suivants utilisent le cache."
         )
 
-    if not st.button("🚀 Interroger Monarch", type="primary", use_container_width=True):
+    if not st.button("🚀 Interroger Monarch", type="primary", width='stretch'):
         return
 
     # ── REQUÊTE ──
@@ -106,7 +106,7 @@ def render(df_f, df, pathways_dict, api_key):
                       + ("..." if len(hpo_genes[term]) > 10 else "")}
             for term, count in hpo_counter.most_common(50)
         ])
-        st.dataframe(df_hpo, hide_index=True, use_container_width=True, height=400)
+        st.dataframe(df_hpo, hide_index=True, width='stretch', height=400)
 
         # Bar plot top 20
         top20 = df_hpo.head(20).sort_values("N genes")
@@ -118,7 +118,7 @@ def render(df_f, df, pathways_dict, api_key):
         fig.update_layout(template="plotly_dark", height=600,
                           plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                           margin=dict(l=10, r=10, t=50, b=10), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("Aucun phenotype HPO retourne.")
 
@@ -139,7 +139,7 @@ def render(df_f, df, pathways_dict, api_key):
                       + ("..." if len(disease_genes[d]) > 10 else "")}
             for d, c in disease_counter.most_common(50)
         ])
-        st.dataframe(df_dis, hide_index=True, use_container_width=True, height=400)
+        st.dataframe(df_dis, hide_index=True, width='stretch', height=400)
     else:
         st.info("Aucune maladie associee retournee.")
 
@@ -160,7 +160,7 @@ def render(df_f, df, pathways_dict, api_key):
                     pd.DataFrame(info["phenotypes"]).rename(columns={
                         "hpo_id": "HPO ID", "label": "Phenotype"
                     }),
-                    hide_index=True, use_container_width=True, height=400,
+                    hide_index=True, width='stretch', height=400,
                 )
             else:
                 st.caption("Aucun.")
@@ -171,7 +171,7 @@ def render(df_f, df, pathways_dict, api_key):
                     pd.DataFrame(info["diseases"]).rename(columns={
                         "id": "ID", "label": "Maladie"
                     }),
-                    hide_index=True, use_container_width=True, height=400,
+                    hide_index=True, width='stretch', height=400,
                 )
             else:
                 st.caption("Aucune.")
@@ -200,5 +200,5 @@ def render(df_f, df, pathways_dict, api_key):
             "📥 Exporter HPO + maladies (CSV)",
             df_export.to_csv(index=False, sep=";"),
             "hpo_diseases.csv", "text/csv",
-            use_container_width=True,
+            width='stretch',
         )
