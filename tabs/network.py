@@ -158,7 +158,7 @@ def render(df_f, df, pathways_dict, api_key):
             help="Limite aux genes ayant au moins un variant Pathogene ou Likely Pathogenic."
         )
     with pc3:
-        if st.button("🗑️ Vider cache STRING", use_container_width=True):
+        if st.button("🗑️ Vider cache STRING", width='stretch'):
             clear_api_cache("string")
             clear_api_cache("string_enrich")
             st.success("Cache STRING vide.")
@@ -231,7 +231,7 @@ def render(df_f, df, pathways_dict, api_key):
         )
         selected_genes = selected_genes[:MAX_GENES]
 
-    if not st.button("🚀 Interroger STRING", type="primary", use_container_width=True):
+    if not st.button("🚀 Interroger STRING", type="primary", width='stretch'):
         return
 
     # ── REQUÊTE ──
@@ -262,7 +262,7 @@ def render(df_f, df, pathways_dict, api_key):
     # ── VISUALISATION ──
     fig = _draw_network_plotly(network, title=f"Reseau STRING — {context_label}")
     if fig:
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── DEGRÉS ──
     with st.expander("🔍 Genes les plus connectes (hubs)", expanded=False):
@@ -273,7 +273,7 @@ def render(df_f, df, pathways_dict, api_key):
         df_deg = pd.DataFrame([
             {"Gene": k, "Connexions": v} for k, v in degree.items() if v > 0
         ]).sort_values("Connexions", ascending=False)
-        st.dataframe(df_deg, hide_index=True, use_container_width=True, height=300)
+        st.dataframe(df_deg, hide_index=True, width='stretch', height=300)
 
     # ── ENRICHISSEMENT ──
     st.markdown("### 🧪 Enrichissement fonctionnel STRING")
@@ -304,11 +304,11 @@ def render(df_f, df, pathways_dict, api_key):
                 with st.expander(f"📂 {cat} ({(df_enrich['category'] == cat).sum()} termes)"):
                     sub = df_enrich[df_enrich["category"] == cat].sort_values("fdr").head(20)
                     st.dataframe(sub.reset_index(drop=True),
-                                  use_container_width=True, height=300)
+                                  width='stretch', height=300)
 
             st.download_button(
                 "📥 Exporter enrichissement (CSV)",
                 df_enrich.to_csv(index=False, sep=";"),
                 f"string_enrichment_{context_label.replace(' ', '_')}.csv",
-                "text/csv", use_container_width=True
+                "text/csv", width='stretch'
             )

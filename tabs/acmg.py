@@ -15,7 +15,7 @@ def render(df_f):
         labels=dict(x="ACMG", y="Patient", color="N"), aspect="auto")
     fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)", height=max(400, len(hm)*18), margin=dict(l=100))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     dp_all = df_f[df_f["ACMG_class"].isin(["Pathogenic", "Likely Pathogenic"])]
     if len(dp_all) > 0:
@@ -23,7 +23,7 @@ def render(df_f):
         pc = ["Pseudo", "Gene_symbol", "Variant", "hgvs.c", "hgvs.p", "Variant_effect",
               "ACMG_class", "Clinvar_significance", "CADD_phred", "gnomad_exomes_NFE_AF", "Allelic_ratio", "Depth"]
         st.dataframe(dp_all[[c for c in pc if c in dp_all.columns]].reset_index(drop=True),
-                     use_container_width=True, height=500)
+                     width='stretch', height=500)
 
     hm_pct = hm.div(hm.sum(axis=1), axis=0) * 100
     fig = go.Figure()
@@ -35,4 +35,4 @@ def render(df_f):
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         height=max(400, len(hm_pct)*22), xaxis_title="% variants", margin=dict(l=100),
         title="Profil ACMG par patient (%)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')

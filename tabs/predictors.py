@@ -37,6 +37,12 @@ THRESHOLDS = {
 }
 
 
+@st.cache_data(show_spinner=False)
+def _convert_variants_to_hgvs(variants_tuple):
+    """Cache la conversion variant->HGVS pour ne pas la refaire a chaque rerun."""
+    return [parse_variant_to_hgvs_g(v) for v in variants_tuple]
+
+
 def _build_annotation_dataframe(df_subset, results):
     """Construit un DataFrame avec les colonnes de prediction extraites."""
     rows = []
@@ -114,7 +120,9 @@ def render(df_f, df, pathways_dict, api_key):
 
     # ── PRÉPARATION DES IDS ──
     df_work = df_f.copy()
-    df_work["_hgvs_g"] = df_work["Variant"].apply(parse_variant_to_hgvs_g)
+    # Cache : ne re-calcule la conversion que si la liste des variants change
+    variants_tuple = tuple(df_work["Variant"].astype(str).tolist())
+    df_work["_hgvs_g"] = _convert_variants_to_hgvs(variants_tuple)
     df_snv = df_work[df_work["_hgvs_g"].notna()]
 
     n_total = len(df_work)
@@ -135,10 +143,10 @@ def render(df_f, df, pathways_dict, api_key):
     with cols[0]:
         run = st.button(
             f"🚀 Annoter {n_unique} variants uniques via MyVariant.info",
-            type="primary", use_container_width=True
+            type="primary", width='stretch'
         )
     with cols[1]:
-        if st.button("🗑️ Vider le cache", use_container_width=True):
+        if st.button("🗑️ Vider le cache", width='stretch'):
             clear_api_cache("myvariant_hg19")
             st.success("Cache MyVariant vide.")
     with cols[2]:
@@ -182,7 +190,7 @@ def render(df_f, df, pathways_dict, api_key):
         cov_data.append({"Predicteur": col, "N": n,
                          "%": f"{100*n/len(df_ann):.0f}%"})
     df_cov = pd.DataFrame(cov_data)
-    st.dataframe(df_cov, hide_index=True, use_container_width=True)
+    st.dataframe(df_cov, hide_index=True, width='stretch')
 
     # ── DISTRIBUTIONS ──
     st.markdown("### 📈 Distributions des scores")
@@ -211,7 +219,7 @@ def render(df_f, df, pathways_dict, api_key):
                 fig.update_layout(template="plotly_dark", height=280,
                                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                                    showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 if descr:
                     st.caption(descr)
 
@@ -242,7 +250,7 @@ def render(df_f, df, pathways_dict, api_key):
         cols_show = [c for c in cols_show if c in df_reclass.columns]
         st.dataframe(
             df_reclass[cols_show].head(50).reset_index(drop=True),
-            use_container_width=True, height=400
+            width='stretch', height=400
         )
     else:
         st.success("Aucun VUS flagge pathogene par concordance REVEL+AlphaMissense.")
@@ -260,7 +268,7 @@ def render(df_f, df, pathways_dict, api_key):
         cols_show = [c for c in cols_show if c in df_splice.columns]
         st.dataframe(
             df_splice[cols_show].head(50).reset_index(drop=True),
-            use_container_width=True, height=300
+            width='stretch', height=300
         )
     else:
         st.success("Aucun variant avec impact splice probable (SpliceAI < 0.5 partout).")
@@ -268,13 +276,13 @@ def render(df_f, df, pathways_dict, api_key):
     # ── TABLEAU COMPLET + EXPORT ──
     st.markdown("### 🗃️ Annotations completes")
     cols_full = [c for c in df_ann.columns if c != "_hgvs_g"]
-    st.dataframe(df_ann[cols_full], use_container_width=True, height=500)
+    st.dataframe(df_ann[cols_full], width='stretch', height=500)
 
     st.download_button(
         "📥 Exporter annotations (CSV)",
         df_ann[cols_full].to_csv(index=False, sep=";"),
         "predictors_annotations.csv", "text/csv",
-        use_container_width=True
+        width='stretch'
     )
 
     # ── INTÉGRATION ACMG vs PRÉDICTEURS ──
@@ -291,4 +299,4 @@ def render(df_f, df, pathways_dict, api_key):
         fig.update_layout(template="plotly_dark", height=350,
                           plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                           title="Matrice de concordance ACMG existant × REVEL")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
