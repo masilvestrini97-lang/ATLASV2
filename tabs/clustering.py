@@ -71,7 +71,7 @@ def render(df_f, df, pathways_dict, api_key):
         )
         return
 
-    if not st.button("🚀 Lancer le clustering", type="primary", use_container_width=True):
+    if not st.button("🚀 Lancer le clustering", type="primary", width='stretch'):
         st.info("Configurez les parametres puis cliquez sur **Lancer le clustering**.")
         return
 
@@ -144,7 +144,7 @@ def render(df_f, df, pathways_dict, api_key):
             fig.update_traces(textposition="top center",
                               marker=dict(size=14, line=dict(width=1, color="white")))
             fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         except Exception as e:
             st.warning(f"UMAP non disponible : {e}")
 
@@ -190,7 +190,7 @@ def render(df_f, df, pathways_dict, api_key):
                             "Global": f"{info['global_mean'][f]:.2f}",
                             "z": f"{z:+.2f}",
                         })
-                    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                    st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
             with cd:
                 st.markdown("**🔽 Features reduites (z < -0.5)**")
                 dn = sig[sig < 0]
@@ -205,7 +205,7 @@ def render(df_f, df, pathways_dict, api_key):
                             "Global": f"{info['global_mean'][f]:.2f}",
                             "z": f"{z:+.2f}",
                         })
-                    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                    st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
 
             if cid in gene_sigs:
                 gs = gene_sigs[cid]
@@ -216,7 +216,7 @@ def render(df_f, df, pathways_dict, api_key):
                         df_g = gs["enriched_genes"].head(10).reset_index()
                         df_g.columns = ["Gene", "Enrichissement"]
                         df_g["Enrichissement"] = df_g["Enrichissement"].apply(lambda x: f"x{x:.1f}")
-                        st.dataframe(df_g, hide_index=True, use_container_width=True)
+                        st.dataframe(df_g, hide_index=True, width='stretch')
                     else:
                         st.caption("Aucun.")
                 with gc2:
@@ -224,7 +224,7 @@ def render(df_f, df, pathways_dict, api_key):
                     if len(gs["pathogenic_genes"]) > 0:
                         df_g = gs["pathogenic_genes"].head(10).reset_index()
                         df_g.columns = ["Gene", "N variants"]
-                        st.dataframe(df_g, hide_index=True, use_container_width=True)
+                        st.dataframe(df_g, hide_index=True, width='stretch')
                     else:
                         st.caption("Aucun.")
 
@@ -240,7 +240,7 @@ def render(df_f, df, pathways_dict, api_key):
             "📊 Matrice features + clusters (CSV)",
             df_export.to_csv(index=False, sep=";"),
             "clustering_features.csv", "text/csv",
-            use_container_width=True, key="dl_clust_feat"
+            width='stretch', key="dl_clust_feat"
         )
 
     with cexp2:
@@ -252,11 +252,11 @@ def render(df_f, df, pathways_dict, api_key):
             "🗺️ Mapping patient -> cluster (CSV)",
             df_map.to_csv(index=False, sep=";"),
             "clustering_mapping.csv", "text/csv",
-            use_container_width=True, key="dl_clust_map"
+            width='stretch', key="dl_clust_map"
         )
 
     with cexp3:
-        if st.button("📄 Generer rapport PDF", use_container_width=True, key="gen_pdf_clust"):
+        if st.button("📄 Generer rapport PDF", width='stretch', key="gen_pdf_clust"):
             with st.spinner("Generation du rapport..."):
                 try:
                     pdf_bytes = generate_cluster_report(
@@ -275,7 +275,7 @@ def render(df_f, df, pathways_dict, api_key):
                 "⬇️ Telecharger PDF",
                 st.session_state["clust_pdf"],
                 "rapport_clustering.pdf", "application/pdf",
-                use_container_width=True, key="dl_clust_pdf"
+                width='stretch', key="dl_clust_pdf"
             )
 
     # ── INTERPRETATION IA ──

@@ -162,7 +162,7 @@ def render(df_f):
     df_tests = pd.DataFrame(test_results)
 
     # Colorer selon significativité
-    st.dataframe(df_tests.reset_index(drop=True), use_container_width=True, height=550,
+    st.dataframe(df_tests.reset_index(drop=True), width='stretch', height=550,
         column_config={
             "P-value (MW)": st.column_config.NumberColumn("P-value", format="%.4f"),
         })
@@ -205,7 +205,7 @@ def render(df_f):
             template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)", height=450,
             showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with vr:
         # Histogramme superposé
@@ -219,7 +219,7 @@ def render(df_f):
             template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)", height=450,
             barmode="overlay", xaxis_title=viz_param, yaxis_title="Patients")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── MATRICE COMPLÈTE ──
     st.markdown("### 📋 Vue panoramique (tous paramètres)")
@@ -264,7 +264,7 @@ def render(df_f):
             x=p, y=hm_cols[-1], yshift=15,
             text="●", showarrow=False,
             font=dict(size=10, color=color))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     st.markdown("🔴 = Compliqué &nbsp; 🟢 = Non compliqué", unsafe_allow_html=True)
 
     # ── RADAR / PROFIL MOYEN PAR GROUPE ──
@@ -311,7 +311,7 @@ def render(df_f):
         paper_bgcolor="rgba(0,0,0,0)",
         height=550,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # ── EXPORT ──
     st.markdown("---")

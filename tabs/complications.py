@@ -185,7 +185,7 @@ def render(df_f, df, pathways_dict, api_key):
             template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)", height=350,
             yaxis_title="Patients")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with cc2:
         fig = go.Figure(go.Pie(
@@ -197,7 +197,7 @@ def render(df_f, df, pathways_dict, api_key):
         fig.update_layout(title="Compliqué vs Non compliqué",
             template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)", height=350)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── VALIDATION PRÉ-ANALYSE ──
     if n_elig < 5:
@@ -392,7 +392,7 @@ def render(df_f, df, pathways_dict, api_key):
                 paper_bgcolor="rgba(0,0,0,0)", height=500,
                 xaxis_title="log2(Odds Ratio) ← Déplété | Enrichi →",
                 yaxis_title="-log10(P ajustée)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # TOP HITS TABLE
             st.markdown("### 🔝 Top variants associés")
@@ -403,7 +403,7 @@ def render(df_f, df, pathways_dict, api_key):
             display_cols = [c for c in display_cols if c in df_res_var.columns]
             st.dataframe(
                 df_res_var[display_cols].head(30).reset_index(drop=True),
-                use_container_width=True,
+                width='stretch',
                 column_config={
                     "Entity": "Variant",
                     "hgvs.p": "HGVS protéique",
@@ -502,7 +502,7 @@ def render(df_f, df, pathways_dict, api_key):
                 paper_bgcolor="rgba(0,0,0,0)", height=550,
                 xaxis_title="log2(Odds Ratio) ← Déplété chez compliqués | Enrichi →",
                 yaxis_title="-log10(P ajustée)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # TOP HITS TABLE
             st.markdown("### 🔝 Top gènes associés")
@@ -511,7 +511,7 @@ def render(df_f, df, pathways_dict, api_key):
                            "Odds_Ratio", "P_value", "P_adjusted", "Direction"]
             st.dataframe(
                 df_res_gene[display_cols].head(30).reset_index(drop=True),
-                use_container_width=True,
+                width='stretch',
                 column_config={
                     "Entity": "Gène",
                     "Freq_compl_carriers": st.column_config.NumberColumn("Fréq compl. chez mutés", format="%.2f"),
@@ -575,7 +575,7 @@ def render(df_f, df, pathways_dict, api_key):
                 text="🟥 Muté + Compl. | 🟩 Muté sans Compl. | ⬛ Non muté",
                 showarrow=False, font=dict(size=10), xanchor="left",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # Afficher le statut complication en-dessous
             status_df = pd.DataFrame({
@@ -585,7 +585,7 @@ def render(df_f, df, pathways_dict, api_key):
                 "N gènes mutés (Patho/LP/VUS)": oncomat.sum(axis=1).values,
             })
             with st.expander("📋 Statut détaillé des patients"):
-                st.dataframe(status_df, use_container_width=True, hide_index=True)
+                st.dataframe(status_df, width='stretch', hide_index=True)
 
             # HEATMAP des gènes significatifs
             if len(nominal_sig_gene) > 0:
@@ -606,7 +606,7 @@ def render(df_f, df, pathways_dict, api_key):
                     height=max(400, len(sig_genes_names) * 25),
                     xaxis_tickangle=-90, margin=dict(l=150, b=120),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             # Export
             csv_gene = df_res_gene.to_csv(index=False, sep=";")
@@ -840,7 +840,7 @@ def render(df_f, df, pathways_dict, api_key):
                         paper_bgcolor="rgba(0,0,0,0)", height=550,
                         xaxis_title="log2(Odds Ratio) ← Déplété | Enrichi chez compliqués →",
                         yaxis_title="-log10(P ajustée)")
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                     # TOP HITS TABLE
                     st.markdown("### 🔝 Top pathways associés")
@@ -851,7 +851,7 @@ def render(df_f, df, pathways_dict, api_key):
                     display_cols_pw = [c for c in display_cols_pw if c in df_res_pw.columns]
                     st.dataframe(
                         df_res_pw[display_cols_pw].head(30).reset_index(drop=True),
-                        use_container_width=True,
+                        width='stretch',
                         column_config={
                             "N_genes_pw": st.column_config.NumberColumn("Gènes pw"),
                             "Muted_genes_in_cohort": "Gènes mutés",
@@ -925,7 +925,7 @@ def render(df_f, df, pathways_dict, api_key):
                                 text="🟥 Muté + Compl | 🟩 Muté sans Compl | ⬛ Non muté",
                                 showarrow=False, font=dict(size=10), xanchor="left",
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width='stretch')
 
                     # Export
                     csv_pw = df_res_pw.to_csv(index=False, sep=";")
@@ -993,7 +993,7 @@ def render(df_f, df, pathways_dict, api_key):
                 template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)",
                 paper_bgcolor="rgba(0,0,0,0)", height=350, width=500,
             )
-            st.plotly_chart(fig, use_container_width=False)
+            st.plotly_chart(fig, width='content')
 
             # ── VUE 1 : HEATMAP ENTITÉ × PATIENTS COMPLIQUÉS ──
             st.markdown(f"### 🗺️ Heatmap : {entity_label}s mutés × patients compliqués")
@@ -1080,7 +1080,7 @@ def render(df_f, df, pathways_dict, api_key):
                         textangle=-90, xanchor="center",
                     )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 # Légende complications
                 legend_html = " &nbsp;|&nbsp; ".join(
@@ -1134,7 +1134,7 @@ def render(df_f, df, pathways_dict, api_key):
                     height=max(500, n_show * 22),
                     margin=dict(l=180 if sig_level == "Par variant" else 120, b=60),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 # ── VUE 3 : TABLEAU RÉCAPITULATIF ──
                 st.markdown(f"### 📋 Tableau récapitulatif")
@@ -1158,7 +1158,7 @@ def render(df_f, df, pathways_dict, api_key):
                     recap_data.append(row)
 
                 df_recap = pd.DataFrame(recap_data)
-                st.dataframe(df_recap.reset_index(drop=True), use_container_width=True,
+                st.dataframe(df_recap.reset_index(drop=True), width='stretch',
                     height=min(600, len(df_recap) * 35 + 40))
 
                 # Export
@@ -1422,7 +1422,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                         height=400
                     )
                     
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                     
                     # Tableau des variants LOH pour ce patient
                     if patient_info['N_LOH'] > 0:
@@ -1434,7 +1434,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                         
                         st.dataframe(
                             loh_variants.reset_index(drop=True),
-                            use_container_width=True,
+                            width='stretch',
                             height=min(400, len(loh_variants) * 35 + 38)
                         )
             
@@ -1490,7 +1490,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                         showlegend=True
                     )
                     
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                     
                     # Statistiques par complication
                     st.markdown("##### Statistiques VAF par complication")
@@ -1526,7 +1526,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                                 'Pct_clonal': '{:.1f}%',
                                 'Pct_LOH': '{:.1f}%'
                             }),
-                            use_container_width=True
+                            width='stretch'
                         )
             
             else:  # Comparaison globale
@@ -1570,7 +1570,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                     height=500
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             
             # ══════════════════════════════════════════
             # 3. DÉTECTION LOH
@@ -1613,7 +1613,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                     st.dataframe(
                         df_loh_display[cols_display].sort_values(['Has_compl', 'Allelic_ratio'], 
                                                                   ascending=[False, False]).reset_index(drop=True),
-                        use_container_width=True,
+                        width='stretch',
                         height=400,
                         column_config={
                             'Allelic_ratio': st.column_config.ProgressColumn(
@@ -1707,7 +1707,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                             margin=dict(l=200, b=120)
                         )
                         
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
                 
                 else:  # Distribution par patient
                     st.markdown("#### Nombre de LOH par patient")
@@ -1739,7 +1739,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                         xaxis_tickangle=-90
                     )
                     
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
             
             # ══════════════════════════════════════════
             # 4. ANALYSE TMB
@@ -1788,7 +1788,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                         height=400
                     )
                     
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 
                 with col2:
                     # Statistiques
@@ -1828,7 +1828,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                                 'TMB_min': '{:.2f}',
                                 'TMB_max': '{:.2f}'
                             }),
-                            use_container_width=True
+                            width='stretch'
                         )
                         
                         # Test statistique
@@ -1885,7 +1885,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                     height=500
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 
                 # Tableau statistiques
                 st.markdown("##### Statistiques par complication")
@@ -1913,7 +1913,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                             'TMB_median': '{:.2f}',
                             'TMB_std': '{:.2f}'
                         }),
-                        use_container_width=True
+                        width='stretch'
                     )
             
             else:  # Stratification par TMB
@@ -1956,7 +1956,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                 cross_tmb.columns = ['Sans complication', 'Avec complication', 'Total']
                 
                 st.markdown("##### Répartition TMB × Complication")
-                st.dataframe(cross_tmb, use_container_width=True)
+                st.dataframe(cross_tmb, width='stretch')
                 
                 # Proportions
                 st.markdown("##### Proportion de complications par niveau de TMB")
@@ -2002,11 +2002,11 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                         showlegend=False
                     )
                     
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                     
                     st.dataframe(
                         df_prop_tmb.style.format({'Pct_compl': '{:.1f}%'}),
-                        use_container_width=True
+                        width='stretch'
                     )
             
             # ══════════════════════════════════════════
@@ -2025,7 +2025,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                     "patient_vaf_stats.csv",
                     "text/csv",
                     key="dl_vaf_stats",
-                    use_container_width=True
+                    width='stretch'
                 )
             
             with col_e2:
@@ -2037,7 +2037,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                         "loh_variants_all.csv",
                         "text/csv",
                         key="dl_loh_all",
-                        use_container_width=True
+                        width='stretch'
                     )
             
             with col_e3:
@@ -2049,7 +2049,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
                     "tmb_scores.csv",
                     "text/csv",
                     key="dl_tmb",
-                    use_container_width=True
+                    width='stretch'
                 )
 
 
@@ -2064,7 +2064,7 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
     exp_c1, exp_c2 = st.columns(2)
 
     with exp_c1:
-        if st.button("📊 Générer rapport PDF", type="primary", use_container_width=True,
+        if st.button("📊 Générer rapport PDF", type="primary", width='stretch',
                      key="gen_compl_pdf"):
             # Renommer la colonne "Gène" en "Gene" pour le rapport (évite les problèmes d'encodage)
             df_res_var_report = df_res_var.copy() if 'df_res_var' in dir() and df_res_var is not None else None
@@ -2111,4 +2111,4 @@ Les résultats avec p brute < 0.05 mais p ajustée ≥ 0.05 doivent être consid
             st.download_button("📥 Télécharger le rapport PDF",
                 st.session_state["compl_pdf"],
                 "rapport_complications.pdf", "application/pdf",
-                use_container_width=True, key="dl_compl_pdf")
+                width='stretch', key="dl_compl_pdf")
