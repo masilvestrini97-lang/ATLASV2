@@ -10,31 +10,28 @@ from core.reports import generate_complications_report
 from core.config import NON_FUNCTIONAL_EFFECTS
 
 
-def render(df_f, df, pathways_dict, api_key):
-    st.markdown("## 🎯 Analyse des complications")
-    st.markdown(
-        "Analyse **supervisée** : existe-t-il une signature génomique particulière associée à "
-        "l'apparition d'une complication (BO, PNP, MG, ou FDSCS) ? "
-        "L'analyse se fait à deux niveaux : par **variant** (peu de signal attendu) et par **gène muté**."
-    )
+# ═══════════════════════════════════════════════════════════════════
+# FONCTIONS DE CALCUL (au niveau module + cache pour eviter le recalcul
+# a chaque interaction Streamlit)
+# ═══════════════════════════════════════════════════════════════════
 
-    # ── DÉFINITION DU GROUPE "COMPLIQUÉ" ──
+@st.cache_data(show_spinner=False)
+def _build_patient_clinical(df_f_hash_key, df_f_pickle):
+    """
+    Construit la matrice patient × variables cliniques.
+    Le hash_key force l'invalidation quand df_f change ; df_f_pickle est
+    le DataFrame serialise (Streamlit hash automatiquement).
+    """
+    df_f = df_f_pickle
     COMPLICATION_COLS = ["BO", "PNP", "MG", "FDSCS"]
     CLINICAL_ALL_COLS = ["Complication", "Chirurgie", "Recidive", "BO", "PNP", "MG",
                          "FDSCS", "Histo UCD", "Auto Ac"]
-
     avail_compl = [c for c in COMPLICATION_COLS if c in df_f.columns]
     avail_clin_all = [c for c in CLINICAL_ALL_COLS if c in df_f.columns]
 
-    if len(avail_compl) == 0:
-        st.error("Aucune colonne de complication trouvée (BO, PNP, MG, FDSCS).")
-        st.stop()
-
-    # Construction de la variable "Complication_any" par patient
     patient_clinical = {}
     for pseudo in df_f["Pseudo"].unique():
         dp = df_f[df_f["Pseudo"] == pseudo]
-        # Dict des valeurs cliniques pour ce patient (prend la 1ère non-NaN)
         pat_data = {}
         has_any_clinical = False
         for col in avail_clin_all:
@@ -45,7 +42,6 @@ def render(df_f, df, pathways_dict, api_key):
             else:
                 pat_data[col] = None
 
-        # Complication_any : au moins une des 4 complications pures à 1
         has_compl = False
         for col in avail_compl:
             try:
@@ -56,10 +52,106 @@ def render(df_f, df, pathways_dict, api_key):
                 pass
         pat_data["Complication_any"] = 1 if has_compl else 0
         pat_data["Has_clinical_info"] = has_any_clinical
-
         patient_clinical[pseudo] = pat_data
 
-    df_pat_clin = pd.DataFrame.from_dict(patient_clinical, orient="index")
+    return pd.DataFrame.from_dict(patient_clinical, orient="index"), avail_compl, avail_clin_all
+
+
+def _run_association_core(df_variants, df_clinical, entity_col, min_carriers,
+                          filter_acmg, correction_method):
+    """Coeur du test d'association (sans cache - appele par la version cachee)."""
+    df_test = df_variants.copy()
+    if filter_acmg is not None:
+        df_test = df_test[df_test["ACMG_class"].isin(filter_acmg)]
+
+    entity_carrier_count = df_test.groupby(entity_col)["Pseudo"].nunique()
+    frequent_entities = entity_carrier_count[entity_carrier_count >= min_carriers].index.tolist()
+
+    results = []
+    patients = df_clinical.index.tolist()
+    compl_set = set(df_clinical[df_clinical["Complication_any"] == 1].index)
+
+    for ent in frequent_entities:
+        carriers = set(df_test[df_test[entity_col] == ent]["Pseudo"].unique()) & set(patients)
+        non_carriers = set(patients) - carriers
+
+        a = len(carriers & compl_set)
+        b = len(carriers - compl_set)
+        c = len(non_carriers & compl_set)
+        d = len(non_carriers - compl_set)
+
+        if a + b == 0 or c + d == 0:
+            continue
+
+        table = [[a, b], [c, d]]
+        try:
+            or_val, p_val = fisher_exact(table, alternative="two-sided")
+        except Exception:
+            or_val, p_val = 1.0, 1.0
+
+        results.append({
+            "Entity": ent,
+            "N_carriers": a + b,
+            "Carriers_with_compl": a,
+            "Carriers_without_compl": b,
+            "Non_carriers_with_compl": c,
+            "Non_carriers_without_compl": d,
+            "Freq_compl_carriers": a / max(a + b, 1),
+            "Freq_compl_non_carriers": c / max(c + d, 1),
+            "Odds_Ratio": or_val,
+            "P_value": p_val,
+            "Direction": "Enrichi chez compliqués" if or_val > 1 else "Déplété chez compliqués",
+        })
+
+    if len(results) == 0:
+        return pd.DataFrame()
+
+    df_res = pd.DataFrame(results).sort_values("P_value")
+    n_tests = len(df_res)
+
+    if correction_method == "Bonferroni":
+        df_res["P_adjusted"] = (df_res["P_value"] * n_tests).clip(upper=1.0)
+    elif correction_method == "FDR (Benjamini-Hochberg)":
+        df_res_sorted = df_res.sort_values("P_value").reset_index(drop=True)
+        df_res_sorted["rank"] = df_res_sorted.index + 1
+        df_res_sorted["P_adjusted"] = (df_res_sorted["P_value"] * n_tests / df_res_sorted["rank"]).clip(upper=1.0)
+        p_adj = np.array(df_res_sorted["P_adjusted"].values, copy=True)
+        for i in range(len(p_adj) - 2, -1, -1):
+            p_adj[i] = min(p_adj[i], p_adj[i + 1])
+        df_res_sorted["P_adjusted"] = p_adj
+        df_res_sorted = df_res_sorted.drop(columns="rank")
+        df_res = df_res_sorted.sort_values("P_value").reset_index(drop=True)
+    else:
+        df_res["P_adjusted"] = df_res["P_value"]
+
+    return df_res
+
+
+@st.cache_data(show_spinner=False)
+def _run_association_cached(df_variants, df_clinical, entity_col, min_carriers,
+                             filter_acmg_tuple, correction_method):
+    """Version cachee : evite de refaire les tests Fisher a chaque rerun."""
+    filter_acmg = list(filter_acmg_tuple) if filter_acmg_tuple else None
+    return _run_association_core(df_variants, df_clinical, entity_col,
+                                  min_carriers, filter_acmg, correction_method)
+
+
+def render(df_f, df, pathways_dict, api_key):
+    st.markdown("## 🎯 Analyse des complications")
+    st.markdown(
+        "Analyse **supervisée** : existe-t-il une signature génomique particulière associée à "
+        "l'apparition d'une complication (BO, PNP, MG, ou FDSCS) ? "
+        "L'analyse se fait à deux niveaux : par **variant** (peu de signal attendu) et par **gène muté**."
+    )
+
+    # ── DÉFINITION DU GROUPE "COMPLIQUÉ" (cache) ──
+    # On hash sur les colonnes/patients pour invalider quand df_f change
+    cache_key = f"{len(df_f)}_{df_f['Pseudo'].nunique()}_{','.join(sorted(df_f.columns)[:20])}"
+    df_pat_clin, avail_compl, avail_clin_all = _build_patient_clinical(cache_key, df_f)
+
+    if len(avail_compl) == 0:
+        st.error("Aucune colonne de complication trouvée (BO, PNP, MG, FDSCS).")
+        st.stop()
 
     # ── FILTRES & PARAMÈTRES ──
     st.markdown("### ⚙️ Paramètres de l'analyse")
@@ -209,87 +301,14 @@ def render(df_f, df, pathways_dict, api_key):
     if n_compl < 3 or n_no_compl < 3:
         st.warning("⚠️ Très peu de patients dans un des groupes. La puissance statistique sera faible.")
 
-    # ── FONCTION D'ANALYSE PAR ENTITÉ ──
+    # ── WRAPPER VERS LA FONCTION CACHEE (definie au niveau module) ──
     def run_association_test(df_variants, df_clinical, entity_col, min_carriers, filter_acmg=None):
-        """
-        Test d'association entre la présence d'une entité (variant ou gène muté)
-        et la variable Complication_any via Fisher exact.
-        """
-        df_test = df_variants.copy()
-        if filter_acmg is not None:
-            df_test = df_test[df_test["ACMG_class"].isin(filter_acmg)]
-
-        # Matrice binaire patient × entité
-        entity_by_patient = df_test.groupby("Pseudo")[entity_col].apply(set)
-        all_entities = set()
-        for s in entity_by_patient: all_entities.update(s)
-
-        # Comptage porteurs
-        entity_carrier_count = df_test.groupby(entity_col)["Pseudo"].nunique()
-        frequent_entities = entity_carrier_count[entity_carrier_count >= min_carriers].index.tolist()
-
-        results = []
-        patients = df_clinical.index.tolist()
-        compl_set = set(df_clinical[df_clinical["Complication_any"] == 1].index)
-
-        for ent in frequent_entities:
-            # Liste des porteurs présents dans la cohorte clinique
-            carriers = set(df_test[df_test[entity_col] == ent]["Pseudo"].unique()) & set(patients)
-            non_carriers = set(patients) - carriers
-
-            a = len(carriers & compl_set)          # porteur & compliqué
-            b = len(carriers - compl_set)          # porteur & non compliqué
-            c = len(non_carriers & compl_set)      # non porteur & compliqué
-            d = len(non_carriers - compl_set)      # non porteur & non compliqué
-
-            if a + b == 0 or c + d == 0:
-                continue  # entité inutile
-
-            table = [[a, b], [c, d]]
-            try:
-                or_val, p_val = fisher_exact(table, alternative="two-sided")
-            except:
-                or_val, p_val = 1.0, 1.0
-
-            results.append({
-                "Entity": ent,
-                "N_carriers": a + b,
-                "Carriers_with_compl": a,
-                "Carriers_without_compl": b,
-                "Non_carriers_with_compl": c,
-                "Non_carriers_without_compl": d,
-                "Freq_compl_carriers": a / max(a + b, 1),
-                "Freq_compl_non_carriers": c / max(c + d, 1),
-                "Odds_Ratio": or_val,
-                "P_value": p_val,
-                "Direction": "Enrichi chez compliqués" if or_val > 1 else "Déplété chez compliqués",
-            })
-
-        if len(results) == 0:
-            return pd.DataFrame()
-
-        df_res = pd.DataFrame(results).sort_values("P_value")
-
-        # Correction multi-tests
-        n_tests = len(df_res)
-        if correction_method == "Bonferroni":
-            df_res["P_adjusted"] = (df_res["P_value"] * n_tests).clip(upper=1.0)
-        elif correction_method == "FDR (Benjamini-Hochberg)":
-            # BH : rank * p / (n_tests * (rank / n_tests)) = p * n_tests / rank
-            df_res_sorted = df_res.sort_values("P_value").reset_index(drop=True)
-            df_res_sorted["rank"] = df_res_sorted.index + 1
-            df_res_sorted["P_adjusted"] = (df_res_sorted["P_value"] * n_tests / df_res_sorted["rank"]).clip(upper=1.0)
-            # Garantir monotonie (BH step-up) — copie writable
-            p_adj = np.array(df_res_sorted["P_adjusted"].values, copy=True)
-            for i in range(len(p_adj) - 2, -1, -1):
-                p_adj[i] = min(p_adj[i], p_adj[i + 1])
-            df_res_sorted["P_adjusted"] = p_adj
-            df_res_sorted = df_res_sorted.drop(columns="rank")
-            df_res = df_res_sorted.sort_values("P_value").reset_index(drop=True)
-        else:
-            df_res["P_adjusted"] = df_res["P_value"]
-
-        return df_res
+        """Wrapper : delegue a la fonction cachee au niveau module."""
+        filter_tuple = tuple(sorted(filter_acmg)) if filter_acmg else None
+        return _run_association_cached(
+            df_variants, df_clinical, entity_col, min_carriers,
+            filter_tuple, correction_method
+        )
 
 
     # ═════════════════════════════════════════════════════
